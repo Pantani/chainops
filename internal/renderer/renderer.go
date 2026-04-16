@@ -9,6 +9,7 @@ import (
 	"github.com/Pantani/gorchestrator/internal/domain"
 )
 
+// WriteArtifacts persists rendered artifacts under baseDir with path safety checks.
 func WriteArtifacts(baseDir string, artifacts []domain.Artifact) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
@@ -34,6 +35,7 @@ func safeRelPath(path string) (string, error) {
 		return "", fmt.Errorf("absolute paths are not allowed")
 	}
 	clean := filepath.Clean(path)
+	// Guard against path traversal outside the selected output directory.
 	if clean == "." || clean == "" {
 		return "", fmt.Errorf("empty path")
 	}

@@ -37,6 +37,25 @@ func TestRunApplyStatusDoctor(t *testing.T) {
 	}
 }
 
+func TestRunApplyRejectsDryRunWithRuntimeExec(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	workdir := t.TempDir()
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+
+	specPath := writeSpecFile(t, workdir, "cli-runtime-conflict")
+	if code := Run([]string{"apply", "-f", specPath, "--dry-run", "--runtime-exec"}); code != 2 {
+		t.Fatalf("expected argument error code 2, got %d", code)
+	}
+}
+
 func writeSpecFile(t *testing.T, dir, clusterName string) string {
 	t.Helper()
 	path := filepath.Join(dir, "cluster.yaml")

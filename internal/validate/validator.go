@@ -12,8 +12,10 @@ import (
 
 var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// Cluster performs core semantic validation independent from plugin/backend internals.
 func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	diags := make([]domain.Diagnostic, 0)
+	isCometBFTPlugin := strings.TrimSpace(c.Spec.Plugin) == "cometbft-family"
 
 	if c.APIVersion != v1alpha1.APIVersion {
 		diags = append(diags, domain.Error("apiVersion", "unsupported apiVersion", "use bgorch.io/v1alpha1"))
@@ -150,6 +152,15 @@ func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 					diags = append(diags, domain.Error(hPath+".type", "unsupported health check type", "use cmd, http, or tcp"))
 				}
 			}
+
+			cometWorkloadCfgPath := fmt.Sprintf("%s.pluginConfig.cometBFT", wPath)
+			if w.PluginConfig.CometBFT != nil {
+				if isCometBFTPlugin {
+					diags = append(diags, validateCometBFTConfig(cometWorkloadCfgPath, w.PluginConfig.CometBFT)...)
+				} else {
+					diags = append(diags, domain.Warning(cometWorkloadCfgPath, "cometBFT config provided for non-cometbft plugin", "move cometBFT config to a spec that uses plugin cometbft-family"))
+				}
+			}
 		}
 
 		for fIdx, f := range pool.Template.Files {
@@ -166,11 +177,82 @@ func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 				diags = append(diags, domain.Error(fPath+".path", "file path escapes workspace", "avoid '..' segments"))
 			}
 		}
+
+		cometNodeCfgPath := fmt.Sprintf("%s.template.pluginConfig.cometBFT", poolPath)
+		if pool.Template.PluginConfig.CometBFT != nil {
+			if isCometBFTPlugin {
+				diags = append(diags, validateCometBFTConfig(cometNodeCfgPath, pool.Template.PluginConfig.CometBFT)...)
+			} else {
+				diags = append(diags, domain.Warning(cometNodeCfgPath, "cometBFT config provided for non-cometbft plugin", "move cometBFT config to a spec that uses plugin cometbft-family"))
+			}
+		}
 	}
 
 	if c.Spec.Plugin != "generic-process" && c.Spec.PluginConfig.GenericProcess != nil {
 		diags = append(diags, domain.Warning("spec.pluginConfig.genericProcess", "genericProcess config provided for non-generic plugin", "move plugin-specific config to the right plugin extension"))
 	}
+	if c.Spec.PluginConfig.CometBFT != nil {
+		if isCometBFTPlugin {
+			diags = append(diags, validateCometBFTConfig("spec.pluginConfig.cometBFT", c.Spec.PluginConfig.CometBFT)...)
+		} else {
+			diags = append(diags, domain.Warning("spec.pluginConfig.cometBFT", "cometBFT config provided for non-cometbft plugin", "move cometBFT config to a spec that uses plugin cometbft-family"))
+		}
+	}
 
 	return diags
+}
+
+func validateCometBFTConfig(path string, cfg *v1alpha1.CometBFTConfig) []domain.Diagnostic {
+	if cfg == nil {
+		return nil
+	}
+
+	diags := make([]domain.Diagnostic, 0)
+	if strings.Contains(strings.TrimSpace(cfg.ChainID), " ") {
+		diags = append(diags, domain.Error(path+".chainID", "chainID must not contain spaces", "use canonical chain IDs like cometbft-localnet"))
+	}
+
+	diags = append(diags, validateOptionalPort(path+".p2pPort", cfg.P2PPort)...)
+	diags = append(diags, validateOptionalPort(path+".rpcPort", cfg.RPCPort)...)
+	diags = append(diags, validateOptionalPort(path+".proxyAppPort", cfg.ProxyAppPort)...)
+
+	if cfg.LogLevel != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.LogLevel)) {
+		case "trace", "debug", "info", "warn", "error":
+		default:
+			diags = append(diags, domain.Error(path+".logLevel", "unsupported cometBFT logLevel", "use one of: trace, debug, info, warn, error"))
+		}
+	}
+
+	if cfg.Pruning != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.Pruning)) {
+		case "default", "nothing", "everything", "custom":
+		default:
+			diags = append(diags, domain.Error(path+".pruning", "unsupported cometBFT pruning mode", "use one of: default, nothing, everything, custom"))
+		}
+	}
+
+	for i, peer := range cfg.PersistentPeers {
+		if strings.TrimSpace(peer) == "" {
+			diags = append(diags, domain.Error(fmt.Sprintf("%s.persistentPeers[%d]", path, i), "persistent peer entry cannot be empty", "remove empty entries or provide nodeID@host:port"))
+		}
+	}
+
+	if cfg.PrometheusListenAddr != "" && !strings.Contains(cfg.PrometheusListenAddr, ":") {
+		diags = append(diags, domain.Error(path+".prometheusListenAddr", "prometheus listen address is invalid", "use host:port or :port"))
+	}
+
+	return diags
+}
+
+func validateOptionalPort(path string, port int) []domain.Diagnostic {
+	if port == 0 {
+		return nil
+	}
+	if port < 1 || port > 65535 {
+		return []domain.Diagnostic{
+			domain.Error(path, "invalid port", "valid range is 1-65535"),
+		}
+	}
+	return nil
 }

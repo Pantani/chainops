@@ -1,0 +1,111 @@
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: cometbft-topology
+spec:
+  family: cometbft
+  plugin: cometbft-family
+  profile: sentry-rpc
+  runtime:
+    backend: docker-compose
+    backendConfig:
+      compose:
+        projectName: cometbft-topology
+        outputFile: compose.yaml
+  pluginConfig:
+    cometBFT:
+      chainID: cometbft-topology-localnet
+      logLevel: info
+      pruning: default
+      minimumGasPrices: "0stake"
+  nodePools:
+    - name: validator
+      replicas: 1
+      roles: [validator]
+      template:
+        role: validator
+        volumes:
+          - name: validator-data
+            type: named
+          - name: validator-config
+            type: named
+        workloads:
+          - name: cometbft
+            mode: container
+            image: ghcr.io/cometbft/cometbft:v0.38.17
+            command: ["cometbft"]
+            args: ["start", "--home", "/cometbft"]
+            ports:
+              - name: p2p
+                containerPort: 26656
+                hostPort: 26656
+              - name: rpc
+                containerPort: 26657
+                hostPort: 26657
+            volumeMounts:
+              - volume: validator-data
+                path: /cometbft/data
+              - volume: validator-config
+                path: /cometbft/config
+            restartPolicy: unless-stopped
+    - name: sentry
+      replicas: 2
+      roles: [sentry]
+      template:
+        role: sentry
+        pluginConfig:
+          cometBFT:
+            persistentPeers:
+              - validator@validator:26656
+            apiEnabled: false
+            grpcEnabled: false
+        volumes:
+          - name: sentry-data
+            type: named
+          - name: sentry-config
+            type: named
+        workloads:
+          - name: cometbft
+            mode: container
+            image: ghcr.io/cometbft/cometbft:v0.38.17
+            command: ["cometbft"]
+            args: ["start", "--home", "/cometbft"]
+            ports:
+              - name: p2p
+                containerPort: 26656
+              - name: rpc
+                containerPort: 26657
+            volumeMounts:
+              - volume: sentry-data
+                path: /cometbft/data
+              - volume: sentry-config
+                path: /cometbft/config
+            restartPolicy: unless-stopped
+    - name: rpc
+      replicas: 1
+      roles: [rpc]
+      template:
+        role: rpc
+        volumes:
+          - name: rpc-data
+            type: named
+          - name: rpc-config
+            type: named
+        workloads:
+          - name: cometbft
+            mode: container
+            image: ghcr.io/cometbft/cometbft:v0.38.17
+            command: ["cometbft"]
+            args: ["start", "--home", "/cometbft"]
+            ports:
+              - name: p2p
+                containerPort: 26656
+              - name: rpc
+                containerPort: 26657
+                hostPort: 27657
+            volumeMounts:
+              - volume: rpc-data
+                path: /cometbft/data
+              - volume: rpc-config
+                path: /cometbft/config
+            restartPolicy: unless-stopped

@@ -15,6 +15,7 @@ import (
 	"github.com/Pantani/gorchestrator/internal/domain"
 )
 
+// Run executes the BGorch CLI command tree and returns process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
 		printUsage()
@@ -165,12 +166,14 @@ func runApply(application *app.App, args []string) int {
 	var outputDir string
 	var output string
 	var dryRun bool
+	var runtimeExec bool
 	fs.StringVar(&filePath, "f", "", "Path to spec file")
 	fs.StringVar(&filePath, "file", "", "Path to spec file")
 	fs.StringVar(&outputDir, "o", ".bgorch/render", "Output directory")
 	fs.StringVar(&outputDir, "output-dir", ".bgorch/render", "Output directory")
 	fs.StringVar(&output, "output", "text", "Output format: text|json")
 	fs.BoolVar(&dryRun, "dry-run", false, "Compute plan without writing artifacts or state")
+	fs.BoolVar(&runtimeExec, "runtime-exec", false, "Execute runtime actions after rendering artifacts (backend-dependent)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -178,8 +181,16 @@ func runApply(application *app.App, args []string) int {
 		fmt.Fprintln(os.Stderr, "-f/--file is required")
 		return 2
 	}
+	if dryRun && runtimeExec {
+		fmt.Fprintln(os.Stderr, "--dry-run cannot be combined with --runtime-exec")
+		return 2
+	}
 
-	result, diags, err := application.Apply(context.Background(), filePath, app.ApplyOptions{OutputDir: outputDir, DryRun: dryRun})
+	result, diags, err := application.Apply(context.Background(), filePath, app.ApplyOptions{
+		OutputDir:      outputDir,
+		DryRun:         dryRun,
+		ExecuteRuntime: runtimeExec,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "apply failed: %v\n", err)
 		return 1
@@ -207,6 +218,13 @@ func runApply(application *app.App, args []string) int {
 		return 0
 	}
 	fmt.Printf("artifacts written: %d\n", result.ArtifactsWritten)
+	if result.RuntimeResult != nil {
+		fmt.Printf("runtime command: %s\n", result.RuntimeResult.Command)
+		if strings.TrimSpace(result.RuntimeResult.Output) != "" {
+			fmt.Println("runtime output:")
+			fmt.Println(result.RuntimeResult.Output)
+		}
+	}
 	if result.SnapshotUpdated {
 		fmt.Println("state snapshot updated")
 	}
@@ -217,9 +235,14 @@ func runStatus(application *app.App, args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	var filePath string
 	var output string
+	var outputDir string
+	var observeRuntime bool
 	fs.StringVar(&filePath, "f", "", "Path to spec file")
 	fs.StringVar(&filePath, "file", "", "Path to spec file")
 	fs.StringVar(&output, "output", "text", "Output format: text|json")
+	fs.StringVar(&outputDir, "o", ".bgorch/render", "Rendered artifacts directory")
+	fs.StringVar(&outputDir, "output-dir", ".bgorch/render", "Rendered artifacts directory")
+	fs.BoolVar(&observeRuntime, "observe-runtime", false, "Observe backend runtime state when supported")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -228,7 +251,10 @@ func runStatus(application *app.App, args []string) int {
 		return 2
 	}
 
-	result, diags, err := application.Status(context.Background(), filePath)
+	result, diags, err := application.Status(context.Background(), filePath, app.StatusOptions{
+		OutputDir:      outputDir,
+		ObserveRuntime: observeRuntime,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
 		return 1
@@ -253,9 +279,14 @@ func runDoctor(application *app.App, args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	var filePath string
 	var output string
+	var outputDir string
+	var observeRuntime bool
 	fs.StringVar(&filePath, "f", "", "Path to spec file")
 	fs.StringVar(&filePath, "file", "", "Path to spec file")
 	fs.StringVar(&output, "output", "text", "Output format: text|json")
+	fs.StringVar(&outputDir, "o", ".bgorch/render", "Rendered artifacts directory")
+	fs.StringVar(&outputDir, "output-dir", ".bgorch/render", "Rendered artifacts directory")
+	fs.BoolVar(&observeRuntime, "observe-runtime", false, "Observe backend runtime state when supported")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -264,7 +295,10 @@ func runDoctor(application *app.App, args []string) int {
 		return 2
 	}
 
-	report, err := application.Doctor(context.Background(), filePath)
+	report, err := application.Doctor(context.Background(), filePath, app.DoctorOptions{
+		OutputDir:      outputDir,
+		ObserveRuntime: observeRuntime,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doctor failed: %v\n", err)
 		return 1
@@ -343,6 +377,12 @@ func printStatus(result app.StatusResult) {
 			fmt.Printf("- %s\n", o)
 		}
 	}
+	if result.RuntimeObservation != nil {
+		fmt.Printf("runtime: %s\n", result.RuntimeObservation.Summary)
+	}
+	if result.RuntimeObservationError != "" {
+		fmt.Printf("runtime observe error: %s\n", result.RuntimeObservationError)
+	}
 }
 
 func printDoctorReport(report doctor.Report) {
@@ -367,12 +407,13 @@ Usage:
   bgorch validate -f <spec.yaml> [--output text|json]
   bgorch render   -f <spec.yaml> [-o <out-dir>] [--write-state]
   bgorch plan     -f <spec.yaml> [--output text|json]
-  bgorch apply    -f <spec.yaml> [-o <out-dir>] [--dry-run] [--output text|json]
-  bgorch status   -f <spec.yaml> [--output text|json]
-  bgorch doctor   -f <spec.yaml> [--output text|json]
+  bgorch apply    -f <spec.yaml> [-o <out-dir>] [--dry-run] [--runtime-exec] [--output text|json]
+  bgorch status   -f <spec.yaml> [-o <out-dir>] [--observe-runtime] [--output text|json]
+  bgorch doctor   -f <spec.yaml> [-o <out-dir>] [--observe-runtime] [--output text|json]
 
 Notes:
-  - Current MVP implements plugin: generic-process
+  - Current plugins: generic-process, cometbft-family
   - Current MVP implements backends: docker-compose, ssh-systemd
+  - Runtime flags are backend-dependent (compose implements runtime exec/observe)
   - State snapshots and locks are stored in .bgorch/state`)
 }

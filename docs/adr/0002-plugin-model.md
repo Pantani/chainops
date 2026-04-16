@@ -5,44 +5,51 @@
 
 ## Context
 
-O core precisa suportar qualquer blockchain, incluindo chains desconhecidas, sem vazamento de detalhes específicos para o schema comum.
+The core must support multiple blockchain families, including unknown ones, without leaking family-specific details into the common schema.
 
 ## Decision
 
-Definir interface de plugin com responsabilidades explícitas:
+Define plugin interface with explicit responsibilities:
 
 - `Validate(spec)`
 - `Normalize(spec)`
-- `Build(ctx, spec)` para produzir artefatos/metadata específicos
-- `Capabilities()` para declarar suporte operacional
+- `Build(ctx, spec)` for family-specific artifacts/metadata
+- `Capabilities()` for operational capability signaling
 
-No schema, separar:
+Schema separation:
 
-1. **Camada comum portátil**: nodePools, workloads, volumes, runtime, probes, políticas genéricas.
-2. **Camada específica tipada**: `pluginConfig.<pluginName>`.
+1. Portable common layer: runtime, nodePools, workloads, volumes, files, health checks, generic policies.
+2. Typed extension layer: `pluginConfig.<pluginName>`.
 
-MVP implementa o plugin `generic-process`.
+## Implementation Status (current repository)
+
+Implemented plugins:
+
+- `generic-process`
+- `cometbft-family`
 
 ## Rationale
 
-- Minimiza acoplamento do core com famílias de chain.
-- Permite evolução incremental por plugin sem churn global na API.
-- `generic-process` garante fallback para chain desconhecida com imagem/binário+comando+volumes+probes.
+- minimizes core coupling to chain-family behavior,
+- enables incremental plugin evolution with localized changes,
+- reuses planner/backends across heterogeneous chain families.
 
 ## Consequences
 
-### Positivas
-- Extensibilidade localizada.
-- Validação especializada por família.
-- Reuso de planner/backends entre plugins.
+### Positive
 
-### Negativas
-- Maior disciplina de versionamento de contratos de plugin.
-- Necessidade de testes de compatibilidade plugin-core.
+- extensibility with clear ownership,
+- specialized validation per family,
+- deterministic family-level artifact generation.
 
-## Rejected alternatives
+### Negative
 
-1. **Campos específicos de chain no schema raiz**
-   - Rejeitado: degrada portabilidade e bloqueia evolução multi-chain.
-2. **`map[string]any` sem contrato tipado**
-   - Rejeitado: remove segurança de validação, dificulta tooling e gera erros tardios.
+- plugin contracts must remain versioned and stable,
+- plugin-core compatibility requires dedicated tests.
+
+## Rejected Alternatives
+
+1. Family-specific fields in root schema
+   - rejected: harms portability and multiplies global churn.
+2. Untyped `map[string]any` plugin extensions
+   - rejected: weak validation guarantees and poor tooling ergonomics.

@@ -8,6 +8,7 @@ import (
 	"github.com/Pantani/gorchestrator/internal/state"
 )
 
+// Build computes a deterministic desired-vs-current plan using snapshot hashes.
 func Build(desired domain.DesiredState, current *state.Snapshot) domain.Plan {
 	plan := domain.Plan{GeneratedAt: time.Now().UTC(), Changes: make([]domain.PlanChange, 0)}
 	next := state.FromDesired(desired)
@@ -62,6 +63,7 @@ func Build(desired domain.DesiredState, current *state.Snapshot) domain.Plan {
 }
 
 func sortChanges(changes []domain.PlanChange) {
+	// Stable ordering keeps CLI output and tests deterministic across map iteration order.
 	sort.Slice(changes, func(i, j int) bool {
 		if changes[i].ResourceType == changes[j].ResourceType {
 			if changes[i].Name == changes[j].Name {

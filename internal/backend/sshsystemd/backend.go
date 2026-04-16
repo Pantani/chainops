@@ -2,7 +2,10 @@ package sshsystemd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -16,22 +19,54 @@ import (
 )
 
 const (
-	BackendName  = "ssh-systemd"
+	// BackendName is the canonical registry key for the ssh-systemd backend.
+	BackendName = "ssh-systemd"
+	// BackendAlias is a compatibility alias accepted by validation/registry lookup.
 	BackendAlias = "sshsystemd"
 )
 
-type Backend struct{}
-
-var _ backend.Backend = (*Backend)(nil)
-
-func New() *Backend {
-	return &Backend{}
+type Runner interface {
+	Run(ctx context.Context, name string, args ...string) (string, error)
 }
 
+type osCommandRunner struct{}
+
+func (r osCommandRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s: %w", strings.Join(append([]string{name}, args...), " "), err)
+	}
+	return string(out), nil
+}
+
+// Backend renders host-mode artifacts for systemd-based deployments.
+type Backend struct {
+	runner Runner
+}
+
+var _ backend.Backend = (*Backend)(nil)
+var _ backend.RuntimeExecutor = (*Backend)(nil)
+var _ backend.RuntimeObserver = (*Backend)(nil)
+
+// New returns a new ssh-systemd backend instance.
+func New() *Backend {
+	return NewWithRunner(osCommandRunner{})
+}
+
+func NewWithRunner(r Runner) *Backend {
+	if r == nil {
+		r = osCommandRunner{}
+	}
+	return &Backend{runner: r}
+}
+
+// Name returns the canonical backend registry name.
 func (b *Backend) Name() string {
 	return BackendName
 }
 
+// ValidateTarget ensures only host-mode workloads are used with ssh-systemd.
 func (b *Backend) ValidateTarget(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	diags := make([]domain.Diagnostic, 0)
 	backendName := strings.TrimSpace(c.Spec.Runtime.Backend)
@@ -58,6 +93,7 @@ func (b *Backend) ValidateTarget(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	return diags
 }
 
+// BuildDesired renders systemd/env/layout artifacts from expanded node/workload specs.
 func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pluginOut chain.Output) (domain.DesiredState, error) {
 	_ = ctx
 
@@ -167,11 +203,97 @@ func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pl
 			"ssh.port": strconv.Itoa(sshPort),
 		},
 	}
+	targets := parseRuntimeTargets(c.Spec.Runtime.Target)
+	if len(targets) > 0 {
+		desired.Metadata["ssh.targets"] = strings.Join(targets, ",")
+	}
 	artifacts = append(artifacts, pluginOut.Artifacts...)
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
 	desired.Artifacts = artifacts
 
 	return desired, nil
+}
+
+func (b *Backend) ExecuteRuntime(ctx context.Context, req backend.RuntimeApplyRequest) (backend.RuntimeApplyResult, error) {
+	if err := ensureRuntimeArtifacts(req.OutputDir, req.Desired); err != nil {
+		return backend.RuntimeApplyResult{}, err
+	}
+
+	cfg, err := runtimeConfigFromDesired(req.Desired)
+	if err != nil {
+		return backend.RuntimeApplyResult{}, err
+	}
+
+	commands := make([]string, 0, len(cfg.Targets))
+	outputs := make([]string, 0, len(cfg.Targets))
+	for _, target := range cfg.Targets {
+		args := []string{"-p", strconv.Itoa(cfg.Port), sshAddress(cfg.User, target), "systemctl", "--version"}
+		out, runErr := b.runner.Run(ctx, "ssh", args...)
+		if runErr != nil {
+			return backend.RuntimeApplyResult{}, runtimeCommandError("runtime preflight", target, "ssh", args, out, runErr)
+		}
+		commands = append(commands, "ssh "+strings.Join(args, " "))
+		if trim := strings.TrimSpace(out); trim != "" {
+			outputs = append(outputs, fmt.Sprintf("[%s]\n%s", target, trim))
+		}
+	}
+
+	return backend.RuntimeApplyResult{
+		Command: strings.Join(commands, " && "),
+		Output:  truncateOutput(strings.Join(outputs, "\n")),
+	}, nil
+}
+
+func (b *Backend) ObserveRuntime(ctx context.Context, req backend.RuntimeObserveRequest) (backend.RuntimeObserveResult, error) {
+	if err := ensureRuntimeArtifacts(req.OutputDir, req.Desired); err != nil {
+		return backend.RuntimeObserveResult{}, err
+	}
+
+	cfg, err := runtimeConfigFromDesired(req.Desired)
+	if err != nil {
+		return backend.RuntimeObserveResult{}, err
+	}
+
+	units := serviceUnits(req.Desired)
+	if len(units) == 0 {
+		return backend.RuntimeObserveResult{}, fmt.Errorf(
+			"no services found in desired state for runtime observation; run validate/render again",
+		)
+	}
+
+	details := make([]string, 0, len(cfg.Targets)*len(units))
+	for _, target := range cfg.Targets {
+		args := []string{
+			"-p", strconv.Itoa(cfg.Port),
+			sshAddress(cfg.User, target),
+			"systemctl", "list-units",
+			"--type=service",
+			"--all",
+			"--no-pager",
+			"--no-legend",
+			"--plain",
+		}
+		args = append(args, units...)
+		out, runErr := b.runner.Run(ctx, "ssh", args...)
+		if runErr != nil {
+			return backend.RuntimeObserveResult{}, runtimeCommandError("runtime observe", target, "ssh", args, out, runErr)
+		}
+
+		lines := compactLines(out)
+		if len(lines) == 0 {
+			details = append(details, fmt.Sprintf("%s: no matching units returned by systemctl", target))
+			continue
+		}
+		for _, line := range lines {
+			details = append(details, fmt.Sprintf("%s: %s", target, line))
+		}
+	}
+	sort.Strings(details)
+
+	return backend.RuntimeObserveResult{
+		Summary: fmt.Sprintf("observed %d target(s) and %d unit(s)", len(cfg.Targets), len(units)),
+		Details: details,
+	}, nil
 }
 
 func resolveVolumes(clusterName, nodeName string, mounts []v1alpha1.VolumeMountSpec, defs map[string]v1alpha1.VolumeSpec) []domain.VolumeMount {
@@ -209,6 +331,7 @@ func resolveDepends(clusterName, nodeName string, deps []string, inNode map[stri
 		if dep == "" {
 			continue
 		}
+		// Accept cross-node refs ("node/workload") and in-node short refs ("workload").
 		if strings.Contains(dep, "/") {
 			parts := strings.SplitN(dep, "/", 2)
 			dep = unitName(clusterName, parts[0], parts[1])
@@ -404,6 +527,191 @@ func sanitizeName(s string) string {
 		return "unnamed"
 	}
 	return s
+}
+
+type runtimeConfig struct {
+	User    string
+	Port    int
+	Targets []string
+}
+
+func runtimeConfigFromDesired(desired domain.DesiredState) (runtimeConfig, error) {
+	cfg := runtimeConfig{
+		User: "root",
+		Port: 22,
+	}
+
+	if desired.Metadata != nil {
+		if user := strings.TrimSpace(desired.Metadata["ssh.user"]); user != "" {
+			cfg.User = user
+		}
+		if portRaw := strings.TrimSpace(desired.Metadata["ssh.port"]); portRaw != "" {
+			port, err := strconv.Atoi(portRaw)
+			if err != nil || port <= 0 {
+				return runtimeConfig{}, fmt.Errorf("invalid ssh.port metadata value %q", portRaw)
+			}
+			cfg.Port = port
+		}
+		cfg.Targets = parseRuntimeTargets(desired.Metadata["ssh.targets"])
+		if len(cfg.Targets) == 0 {
+			cfg.Targets = parseRuntimeTargets(desired.Metadata["ssh.target"])
+		}
+	}
+
+	if len(cfg.Targets) == 0 {
+		return runtimeConfig{}, fmt.Errorf(
+			"runtime target is empty for ssh-systemd backend; set spec.runtime.target to one or more SSH hosts",
+		)
+	}
+
+	return cfg, nil
+}
+
+func parseRuntimeTargets(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sshAddress(user, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return target
+	}
+	if strings.Contains(target, "@") || strings.TrimSpace(user) == "" {
+		return target
+	}
+	return user + "@" + target
+}
+
+func ensureRuntimeArtifacts(outputDir string, desired domain.DesiredState) error {
+	required := runtimeArtifactPaths(desired)
+	if len(required) == 0 {
+		return fmt.Errorf("no ssh-systemd runtime artifacts found in desired state")
+	}
+	missing := make([]string, 0)
+	for _, rel := range required {
+		abs := filepath.Join(outputDir, rel)
+		if _, err := os.Stat(abs); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				missing = append(missing, rel)
+				continue
+			}
+			return fmt.Errorf("check runtime artifact %s: %w", abs, err)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"missing %d rendered ssh-systemd artifact(s) in %s (first: %s); run render/apply before runtime execution",
+			len(missing),
+			outputDir,
+			missing[0],
+		)
+	}
+	return nil
+}
+
+func runtimeArtifactPaths(desired domain.DesiredState) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, artifact := range desired.Artifacts {
+		if !strings.HasPrefix(artifact.Path, "ssh-systemd/") {
+			continue
+		}
+		if !strings.HasSuffix(artifact.Path, ".service") &&
+			!strings.HasSuffix(artifact.Path, ".env") &&
+			!strings.HasSuffix(artifact.Path, "directories.txt") {
+			continue
+		}
+		if _, ok := seen[artifact.Path]; ok {
+			continue
+		}
+		seen[artifact.Path] = struct{}{}
+		out = append(out, artifact.Path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func serviceUnits(desired domain.DesiredState) []string {
+	seen := make(map[string]struct{}, len(desired.Services))
+	out := make([]string, 0, len(desired.Services))
+	for _, svc := range desired.Services {
+		name := strings.TrimSpace(svc.Name)
+		if name == "" {
+			continue
+		}
+		unit := name + ".service"
+		if _, ok := seen[unit]; ok {
+			continue
+		}
+		seen[unit] = struct{}{}
+		out = append(out, unit)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func runtimeCommandError(op, target, name string, args []string, out string, err error) error {
+	command := strings.Join(append([]string{name}, args...), " ")
+	lowerOut := strings.ToLower(out)
+
+	if errors.Is(err, exec.ErrNotFound) || strings.Contains(strings.ToLower(err.Error()), "executable file not found") {
+		return fmt.Errorf("%s failed for %q: ssh client not found; install OpenSSH client and retry", op, target)
+	}
+	if strings.Contains(lowerOut, "systemctl: command not found") || strings.Contains(lowerOut, "systemctl: not found") {
+		return fmt.Errorf("%s failed for %q: remote host is missing systemctl; install systemd and retry", op, target)
+	}
+	if strings.Contains(lowerOut, "could not resolve hostname") || strings.Contains(lowerOut, "name or service not known") {
+		return fmt.Errorf("%s failed for %q: ssh hostname resolution failed; verify spec.runtime.target and DNS", op, target)
+	}
+
+	trimmed := truncateOutput(strings.TrimSpace(out))
+	if trimmed == "" {
+		return fmt.Errorf("%s failed for %q: %w (command: %s)", op, target, err, command)
+	}
+	return fmt.Errorf("%s failed for %q: %w (command: %s, output: %s)", op, target, err, command, trimmed)
+}
+
+func truncateOutput(out string) string {
+	const maxLen = 4096
+	out = strings.TrimSpace(out)
+	if len(out) <= maxLen {
+		return out
+	}
+	return out[:maxLen] + "...(truncated)"
+}
+
+func compactLines(out string) []string {
+	lines := strings.Split(out, "\n")
+	compact := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		compact = append(compact, line)
+	}
+	return compact
 }
 
 func systemdRestartPolicy(rp v1alpha1.RestartPolicy) string {

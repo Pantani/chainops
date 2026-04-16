@@ -14,8 +14,10 @@ import (
 	"github.com/Pantani/gorchestrator/internal/domain"
 )
 
+// SnapshotVersion tags the snapshot serialization format.
 const SnapshotVersion = "v1alpha1"
 
+// Snapshot stores hashed desired-state material used for deterministic diffing.
 type Snapshot struct {
 	Version     string            `json:"version"`
 	ClusterName string            `json:"clusterName"`
@@ -25,14 +27,17 @@ type Snapshot struct {
 	UpdatedAt   time.Time         `json:"updatedAt"`
 }
 
+// Store persists snapshots and lock files under a local state directory.
 type Store struct {
 	Dir string
 }
 
+// NewStore creates a filesystem-backed state store.
 func NewStore(dir string) *Store {
 	return &Store{Dir: dir}
 }
 
+// Load returns nil,nil when the snapshot file does not exist.
 func (s *Store) Load(clusterName, backend string) (*Snapshot, error) {
 	path := s.path(clusterName, backend)
 	raw, err := os.ReadFile(path)
@@ -49,6 +54,7 @@ func (s *Store) Load(clusterName, backend string) (*Snapshot, error) {
 	return &snap, nil
 }
 
+// Save writes a snapshot for the given cluster/backend key.
 func (s *Store) Save(snap *Snapshot) error {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
@@ -78,6 +84,7 @@ func normalizePart(in string) string {
 	return in
 }
 
+// FromDesired builds a snapshot by hashing service specs and artifact contents.
 func FromDesired(desired domain.DesiredState) *Snapshot {
 	services := make(map[string]string, len(desired.Services))
 	for _, s := range desired.Services {
@@ -107,6 +114,7 @@ func hashString(v string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// SortedKeys returns map keys in deterministic order for stable output.
 func SortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

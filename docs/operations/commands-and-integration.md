@@ -1,82 +1,131 @@
-# Guia Operacional (MVP): Comandos e Integração Plugin/Backend
+# Operational Guide: Commands and Plugin/Backend Integration
 
-Este guia separa explicitamente o que está **implementado** do que está **planejado**.
+This guide reflects the current implementation in the repository.
 
-## Comandos
+## Command Matrix
 
-| Comando | Estado | Objetivo | Efeito colateral |
-|---------|--------|----------|------------------|
-| `validate -f <spec>` | Implementado | Validar schema/domínio/plugin/backend | Nenhum |
-| `render -f <spec> -o <dir>` | Implementado | Gerar artefatos determinísticos do desired state | Escreve arquivos em `<dir>` |
-| `render ... --write-state` | Implementado | Mesmo do `render` + persistir snapshot local | Escreve arquivos + snapshot em `.bgorch/state` |
-| `plan -f <spec>` | Implementado | Diff entre desired e snapshot local atual | Nenhum |
-| `apply -f <spec>` | Implementado (MVP) | Executar reconciliação local com lock | Escreve artefatos em `<dir>` e snapshot em `.bgorch/state` |
-| `status -f <spec>` | Implementado (MVP) | Expor convergência desired vs snapshot local | Leitura de spec/snapshot |
-| `doctor -f <spec>` | Implementado (MVP) | Diagnóstico de spec/resolução/state/drift local | Leitura de spec/snapshot |
+| Command | Implemented | Notes |
+|---|---|---|
+| `validate -f <spec>` | Yes | Runs plugin + backend + core validation. |
+| `render -f <spec> -o <dir>` | Yes | Writes desired artifacts to disk. |
+| `render --write-state` | Yes | Persists desired snapshot without runtime execution. |
+| `plan -f <spec>` | Yes | Diff is snapshot-based (local filesystem). |
+| `apply -f <spec>` | Yes | Lock + plan + artifact write + snapshot save. |
+| `apply --dry-run` | Yes | Computes plan under lock, no writes. |
+| `apply --runtime-exec` | Yes (backend-gated) | Executes backend runtime operation after successful render. |
+| `status -f <spec>` | Yes | Desired vs snapshot summary. |
+| `status --observe-runtime` | Yes (backend-gated) | Runs runtime observe when backend supports it and prerequisites are met. |
+| `doctor -f <spec>` | Yes | Aggregated operational checks. |
+| `doctor --observe-runtime` | Yes (backend-gated) | Adds runtime observe check when backend supports it and prerequisites are met. |
 
-## Execução segura no estado atual
-
-Fluxo recomendado hoje:
+## Recommended Flow
 
 ```bash
 go run ./cmd/bgorch validate -f examples/generic-single-compose.yaml
-go run ./cmd/bgorch apply -f examples/generic-single-compose.yaml -o .bgorch/render --dry-run
-go run ./cmd/bgorch apply -f examples/generic-single-compose.yaml -o .bgorch/render
 go run ./cmd/bgorch plan -f examples/generic-single-compose.yaml
+go run ./cmd/bgorch apply -f examples/generic-single-compose.yaml -o .bgorch/render
 go run ./cmd/bgorch status -f examples/generic-single-compose.yaml
 go run ./cmd/bgorch doctor -f examples/generic-single-compose.yaml
 ```
 
-Limitação importante:
-- `status` e `doctor` no MVP usam snapshot local e não fazem observação remota de runtime.
-- `apply` no MVP não executa `docker compose up` nem `systemctl` remoto; ele persiste artefatos + snapshot com lock.
+When you need compose runtime execution/observation:
 
-## Semântica alvo de evolução de `apply/status/doctor` (próximas fases)
+```bash
+go run ./cmd/bgorch apply  -f examples/generic-single-compose.yaml -o .bgorch/render --runtime-exec
+go run ./cmd/bgorch status -f examples/generic-single-compose.yaml -o .bgorch/render --observe-runtime
+go run ./cmd/bgorch doctor -f examples/generic-single-compose.yaml -o .bgorch/render --observe-runtime
+```
 
-Definida em `docs/adr/0004-mvp-locking-and-command-semantics.md`.
+When you need `ssh-systemd` runtime execution/observation (requires `spec.runtime.target` hosts and SSH connectivity):
 
-Resumo:
-- `apply`: lock exclusivo por cluster/backend, execução idempotente, verificação pós-apply, persistência atômica de snapshot.
-- `status`: leitura de snapshot + observação do backend, sem mutação.
-- `doctor`: checks de configuração/execução/saúde, saída acionável.
+```bash
+go run ./cmd/bgorch apply  -f examples/generic-single-ssh-systemd.yaml -o .bgorch/render --runtime-exec
+go run ./cmd/bgorch status -f examples/generic-single-ssh-systemd.yaml -o .bgorch/render --observe-runtime
+go run ./cmd/bgorch doctor -f examples/generic-single-ssh-systemd.yaml -o .bgorch/render --observe-runtime
+```
 
-## Modelo de integração Plugin/Backend
+## Current Semantics
 
-Pipeline de integração:
+### `apply`
 
-1. `spec` seleciona `spec.plugin` e `spec.runtime.backend`.
-2. Core resolve ambos em registries.
-3. Plugin valida/normaliza e gera `Output` específico.
-4. Backend valida target e converte `Output` em `DesiredState`.
-5. Core renderiza/plana sobre artefatos e estado.
+- always resolves plugin/backend and builds desired state first;
+- acquires lock by `(cluster, backend)`;
+- computes plan against snapshot;
+- writes artifacts unless `--dry-run`;
+- optionally executes backend runtime if `--runtime-exec` is set and backend supports it;
+- persists snapshot only after successful artifact write and optional runtime execution.
 
-## Contrato para novo plugin
+### `status`
 
-Checklist mínimo:
-- Implementar `Name`, `Family`, `Capabilities`.
-- Implementar `Validate` e `Normalize`.
-- Implementar `Build` produzindo artefatos/metadata determinísticos.
-- Declarar campos específicos apenas em `pluginConfig` tipado.
-- Não introduzir campos específicos de chain no schema comum sem ADR.
+- validates spec and computes desired-vs-snapshot diff;
+- reports observations regardless of runtime availability;
+- runtime observation errors are surfaced as non-fatal fields/messages.
 
-## Contrato para novo backend
+### `doctor`
 
-Checklist mínimo:
-- Implementar `Name`.
-- Implementar `ValidateTarget` com diagnósticos claros.
-- Implementar `BuildDesired` determinístico.
-- Não mover semântica de protocolo para o backend.
-- Declarar gaps de capacidade explicitamente (ex.: host mode, probes, restart nuances).
+- emits `pass/warn/fail` checks for spec, registry resolution, state access, snapshot health, drift;
+- runtime observation is optional and warning-based on failure.
 
-## Matriz de compatibilidade (estado atual)
+## Backend Capability Matrix
 
-| Plugin | Backend | Estado |
-|--------|---------|--------|
-| `generic-process` | `docker-compose` | Implementado |
-| `generic-process` | `ssh-systemd` | Implementado (MVP host-only) |
+| Backend | BuildDesired | Runtime Exec | Runtime Observe | Notes |
+|---|---|---|---|---|
+| `docker-compose` | Yes | Yes | Yes | Requires Docker/Compose and rendered compose file. |
+| `ssh-systemd` | Yes | Yes | Yes | Requires rendered artifacts, runtime targets, `ssh` binary and remote `systemctl`. |
 
-## Observabilidade operacional (MVP)
+## Plugin and Backend Contracts
 
-- Saída de diagnósticos em texto e JSON (`validate`/`plan`).
-- Saída determinística de artefatos para revisão/auditoria.
-- Sem telemetria runtime integrada ainda (planejado para fases seguintes).
+### Plugin contract (`internal/chain.Plugin`)
+
+- `Validate(spec)`
+- `Normalize(spec)`
+- `Build(ctx, spec) -> Output`
+- `Capabilities()`
+
+Responsibilities:
+
+- chain-family specific semantics;
+- plugin-specific artifact generation;
+- defaults/inference inside chain scope.
+
+### Backend contract (`internal/backend.Backend`)
+
+- `ValidateTarget(spec)`
+- `BuildDesired(ctx, spec, pluginOut)`
+
+Optional runtime capabilities:
+
+- `RuntimeExecutor` (`ExecuteRuntime`)
+- `RuntimeObserver` (`ObserveRuntime`)
+
+Responsibilities:
+
+- runtime-specific validation and artifact translation;
+- optional runtime command execution/observation.
+
+## Compatibility Matrix
+
+| Plugin | Backend | Status |
+|---|---|---|
+| `generic-process` | `docker-compose` | Supported |
+| `generic-process` | `ssh-systemd` | Supported |
+| `cometbft-family` | `docker-compose` | Supported |
+| `cometbft-family` | `ssh-systemd` | Limited by workload mode constraints |
+
+`ssh-systemd` only supports host workloads; compose backend only supports container workloads.
+
+## Typed Extension Matrix
+
+| Extension Block | Status | Notes |
+|---|---|---|
+| `spec.pluginConfig.genericProcess` | Implemented | Used by `generic-process` plugin (`extraFiles`). |
+| `spec.pluginConfig.cometBFT` | Implemented | Typed extension consumed by `cometbft-family` at cluster/node/workload scope (ADR 0006). |
+| `spec.runtime.backendConfig.compose` | Implemented | Compose project/network/output tuning. |
+| `spec.runtime.backendConfig.sshSystemd` | Implemented | Connection metadata (`user`, `port`) for artifact generation. |
+
+## Known Operational Limits
+
+- snapshot/lock model is local filesystem based;
+- no distributed lock or shared state store;
+- runtime ops fail fast if backend preflight is not satisfied (for example: missing compose/ssh/systemctl, missing runtime targets, missing rendered artifacts);
+- no asynchronous reconciliation loop/background workers.

@@ -1,10 +1,13 @@
 package v1alpha1
 
 const (
-	APIVersion       = "bgorch.io/v1alpha1"
+	// APIVersion is the canonical version for this schema package.
+	APIVersion = "bgorch.io/v1alpha1"
+	// KindChainCluster is the only top-level kind currently supported.
 	KindChainCluster = "ChainCluster"
 )
 
+// ChainCluster is the root desired-state document consumed by BGorch.
 type ChainCluster struct {
 	APIVersion string           `yaml:"apiVersion" json:"apiVersion"`
 	Kind       string           `yaml:"kind" json:"kind"`
@@ -12,11 +15,13 @@ type ChainCluster struct {
 	Spec       ChainClusterSpec `yaml:"spec" json:"spec"`
 }
 
+// ObjectMeta identifies a cluster object and carries optional labels.
 type ObjectMeta struct {
 	Name   string            `yaml:"name" json:"name"`
 	Labels map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 }
 
+// ChainClusterSpec defines runtime/backend selection and node topology intent.
 type ChainClusterSpec struct {
 	Family       string         `yaml:"family" json:"family"`
 	Profile      string         `yaml:"profile,omitempty" json:"profile,omitempty"`
@@ -29,28 +34,33 @@ type ChainClusterSpec struct {
 	Observe      ObservePolicy  `yaml:"observe,omitempty" json:"observe,omitempty"`
 }
 
+// RuntimeSpec selects the backend implementation and backend-specific options.
 type RuntimeSpec struct {
 	Backend       string        `yaml:"backend" json:"backend"`
 	Target        string        `yaml:"target,omitempty" json:"target,omitempty"`
 	BackendConfig BackendConfig `yaml:"backendConfig,omitempty" json:"backendConfig,omitempty"`
 }
 
+// BackendConfig contains typed backend extension blocks.
 type BackendConfig struct {
 	Compose    *ComposeConfig    `yaml:"compose,omitempty" json:"compose,omitempty"`
 	SSHSystemd *SSHSystemdConfig `yaml:"sshSystemd,omitempty" json:"sshSystemd,omitempty"`
 }
 
+// ComposeConfig contains compose backend rendering parameters.
 type ComposeConfig struct {
 	ProjectName string `yaml:"projectName,omitempty" json:"projectName,omitempty"`
 	NetworkName string `yaml:"networkName,omitempty" json:"networkName,omitempty"`
 	OutputFile  string `yaml:"outputFile,omitempty" json:"outputFile,omitempty"`
 }
 
+// SSHSystemdConfig contains ssh-systemd backend rendering parameters.
 type SSHSystemdConfig struct {
 	User string `yaml:"user,omitempty" json:"user,omitempty"`
 	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
 }
 
+// NodePoolSpec defines a logical group of replicated nodes.
 type NodePoolSpec struct {
 	Name     string   `yaml:"name" json:"name"`
 	Replicas int      `yaml:"replicas,omitempty" json:"replicas,omitempty"`
@@ -58,6 +68,7 @@ type NodePoolSpec struct {
 	Template NodeSpec `yaml:"template" json:"template"`
 }
 
+// NodeSpec is the template expanded into concrete node instances.
 type NodeSpec struct {
 	Name         string         `yaml:"name,omitempty" json:"name,omitempty"`
 	Role         string         `yaml:"role,omitempty" json:"role,omitempty"`
@@ -71,6 +82,7 @@ type NodeSpec struct {
 	PluginConfig PluginConfig   `yaml:"pluginConfig,omitempty" json:"pluginConfig,omitempty"`
 }
 
+// WorkloadMode declares where a workload should run.
 type WorkloadMode string
 
 const (
@@ -78,6 +90,7 @@ const (
 	WorkloadModeHost      WorkloadMode = "host"
 )
 
+// WorkloadSpec defines one process in a node template.
 type WorkloadSpec struct {
 	Name          string            `yaml:"name" json:"name"`
 	Mode          WorkloadMode      `yaml:"mode,omitempty" json:"mode,omitempty"`
@@ -107,6 +120,7 @@ type PortSpec struct {
 	Protocol      string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 }
 
+// VolumeType defines whether data is runtime-managed or host-bound.
 type VolumeType string
 
 const (
@@ -172,6 +186,7 @@ type LifecycleHooks struct {
 	PreStop   []string `yaml:"preStop,omitempty" json:"preStop,omitempty"`
 }
 
+// HealthCheckType controls how workload liveness/readiness probes are described.
 type HealthCheckType string
 
 const (
@@ -190,6 +205,7 @@ type HealthCheckSpec struct {
 	FailureThreshold int             `yaml:"failureThreshold,omitempty" json:"failureThreshold,omitempty"`
 }
 
+// RestartPolicy captures generic restart intent consumed by backends.
 type RestartPolicy string
 
 const (
@@ -198,10 +214,30 @@ const (
 	RestartOnFailure     RestartPolicy = "on-failure"
 )
 
+// PluginConfig contains typed plugin extension blocks.
 type PluginConfig struct {
 	GenericProcess *GenericProcessConfig `yaml:"genericProcess,omitempty" json:"genericProcess,omitempty"`
+	CometBFT       *CometBFTConfig       `yaml:"cometBFT,omitempty" json:"cometBFT,omitempty"`
 }
 
+// GenericProcessConfig contains generic-process plugin extension fields.
 type GenericProcessConfig struct {
 	ExtraFiles []FileSpec `yaml:"extraFiles,omitempty" json:"extraFiles,omitempty"`
+}
+
+// CometBFTConfig contains cometbft-family extension fields.
+type CometBFTConfig struct {
+	ChainID              string   `yaml:"chainID,omitempty" json:"chainID,omitempty"`
+	Moniker              string   `yaml:"moniker,omitempty" json:"moniker,omitempty"`
+	P2PPort              int      `yaml:"p2pPort,omitempty" json:"p2pPort,omitempty"`
+	RPCPort              int      `yaml:"rpcPort,omitempty" json:"rpcPort,omitempty"`
+	ProxyAppPort         int      `yaml:"proxyAppPort,omitempty" json:"proxyAppPort,omitempty"`
+	LogLevel             string   `yaml:"logLevel,omitempty" json:"logLevel,omitempty"`
+	Pruning              string   `yaml:"pruning,omitempty" json:"pruning,omitempty"`
+	MinimumGasPrices     string   `yaml:"minimumGasPrices,omitempty" json:"minimumGasPrices,omitempty"`
+	PersistentPeers      []string `yaml:"persistentPeers,omitempty" json:"persistentPeers,omitempty"`
+	PrometheusEnabled    *bool    `yaml:"prometheusEnabled,omitempty" json:"prometheusEnabled,omitempty"`
+	PrometheusListenAddr string   `yaml:"prometheusListenAddr,omitempty" json:"prometheusListenAddr,omitempty"`
+	APIEnabled           *bool    `yaml:"apiEnabled,omitempty" json:"apiEnabled,omitempty"`
+	GRPCEnabled          *bool    `yaml:"grpcEnabled,omitempty" json:"grpcEnabled,omitempty"`
 }

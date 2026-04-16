@@ -19,56 +19,86 @@ import (
 	"github.com/Pantani/gorchestrator/internal/validate"
 )
 
+// Options controls App construction dependencies.
 type Options struct {
-	StateDir string
+	StateDir   string
+	Registries *registry.Registries
 }
 
+// ApplyOptions controls side effects of the apply pipeline.
 type ApplyOptions struct {
-	OutputDir string
-	DryRun    bool
+	OutputDir      string
+	DryRun         bool
+	ExecuteRuntime bool
 }
 
+// StatusOptions configures runtime observation behavior for status.
+type StatusOptions struct {
+	OutputDir      string
+	ObserveRuntime bool
+}
+
+// DoctorOptions configures runtime observation behavior for doctor.
+type DoctorOptions struct {
+	OutputDir      string
+	ObserveRuntime bool
+}
+
+// ApplyResult captures the deterministic apply outcome for CLI/JSON consumers.
 type ApplyResult struct {
-	ClusterName      string      `json:"clusterName"`
-	Backend          string      `json:"backend"`
-	DryRun           bool        `json:"dryRun"`
-	Plan             domain.Plan `json:"plan"`
-	ArtifactsWritten int         `json:"artifactsWritten"`
-	SnapshotUpdated  bool        `json:"snapshotUpdated"`
-	LockPath         string      `json:"lockPath,omitempty"`
+	ClusterName      string                      `json:"clusterName"`
+	Backend          string                      `json:"backend"`
+	DryRun           bool                        `json:"dryRun"`
+	RuntimeRequested bool                        `json:"runtimeRequested"`
+	Plan             domain.Plan                 `json:"plan"`
+	ArtifactsWritten int                         `json:"artifactsWritten"`
+	SnapshotUpdated  bool                        `json:"snapshotUpdated"`
+	LockPath         string                      `json:"lockPath,omitempty"`
+	RuntimeResult    *backend.RuntimeApplyResult `json:"runtimeResult,omitempty"`
 }
 
+// StatusResult summarizes desired-vs-snapshot convergence plus optional runtime observation.
 type StatusResult struct {
-	ClusterName      string          `json:"clusterName"`
-	Backend          string          `json:"backend"`
-	SnapshotPath     string          `json:"snapshotPath"`
-	SnapshotExists   bool            `json:"snapshotExists"`
-	Snapshot         *state.Snapshot `json:"snapshot,omitempty"`
-	DesiredServices  int             `json:"desiredServices"`
-	DesiredArtifacts int             `json:"desiredArtifacts"`
-	Plan             domain.Plan     `json:"plan"`
-	Observations     []string        `json:"observations,omitempty"`
+	ClusterName             string                        `json:"clusterName"`
+	Backend                 string                        `json:"backend"`
+	SnapshotPath            string                        `json:"snapshotPath"`
+	SnapshotExists          bool                          `json:"snapshotExists"`
+	Snapshot                *state.Snapshot               `json:"snapshot,omitempty"`
+	DesiredServices         int                           `json:"desiredServices"`
+	DesiredArtifacts        int                           `json:"desiredArtifacts"`
+	Plan                    domain.Plan                   `json:"plan"`
+	Observations            []string                      `json:"observations,omitempty"`
+	RuntimeObserveRequested bool                          `json:"runtimeObserveRequested"`
+	RuntimeObservation      *backend.RuntimeObserveResult `json:"runtimeObservation,omitempty"`
+	RuntimeObservationError string                        `json:"runtimeObservationError,omitempty"`
 }
 
+// App orchestrates command-level workflows around plugins, backends, and state.
 type App struct {
 	registries *registry.Registries
 	stateStore *state.Store
 }
 
+// New constructs an App with sane defaults for state directory and registries.
 func New(opts Options) *App {
 	if opts.StateDir == "" {
 		opts.StateDir = ".bgorch/state"
 	}
+	if opts.Registries == nil {
+		opts.Registries = registry.NewDefault()
+	}
 	return &App{
-		registries: registry.NewDefault(),
+		registries: opts.Registries,
 		stateStore: state.NewStore(opts.StateDir),
 	}
 }
 
+// LoadSpec loads and defaults a v1alpha1 cluster spec from disk.
 func (a *App) LoadSpec(path string) (*v1alpha1.ChainCluster, error) {
 	return spec.LoadFromFile(path)
 }
 
+// ValidateSpec runs registry resolution, plugin/backend validation, and core validation.
 func (a *App) ValidateSpec(path string) (*v1alpha1.ChainCluster, []domain.Diagnostic, error) {
 	cluster, err := spec.LoadFromFile(path)
 	if err != nil {
@@ -85,6 +115,7 @@ func (a *App) ValidateSpec(path string) (*v1alpha1.ChainCluster, []domain.Diagno
 	return cluster, diags, nil
 }
 
+// Render builds desired state and writes rendered artifacts to outputDir.
 func (a *App) Render(ctx context.Context, specPath, outputDir string, writeState bool) (domain.DesiredState, []domain.Diagnostic, error) {
 	_, desired, diags, err := a.buildDesired(ctx, specPath)
 	if err != nil {
@@ -106,6 +137,7 @@ func (a *App) Render(ctx context.Context, specPath, outputDir string, writeState
 	return desired, diags, nil
 }
 
+// Plan computes desired-vs-snapshot changes without mutating artifacts or state.
 func (a *App) Plan(ctx context.Context, specPath string) (domain.Plan, []domain.Diagnostic, error) {
 	cluster, desired, diags, err := a.buildDesired(ctx, specPath)
 	if err != nil {
@@ -122,20 +154,29 @@ func (a *App) Plan(ctx context.Context, specPath string) (domain.Plan, []domain.
 	return p, diags, nil
 }
 
+// Apply executes the mutable pipeline under lock and optionally triggers backend runtime execution.
 func (a *App) Apply(ctx context.Context, specPath string, opts ApplyOptions) (result ApplyResult, diags []domain.Diagnostic, err error) {
 	if opts.OutputDir == "" {
 		opts.OutputDir = ".bgorch/render"
+	}
+	if opts.DryRun && opts.ExecuteRuntime {
+		return ApplyResult{}, nil, fmt.Errorf("--dry-run cannot be combined with runtime execution")
 	}
 
 	cluster, desired, diags, err := a.buildDesired(ctx, specPath)
 	if err != nil {
 		return ApplyResult{}, nil, err
 	}
+	_, backendImpl, resolveDiags := a.resolve(cluster)
+	if HasErrors(resolveDiags) {
+		return ApplyResult{}, nil, fmt.Errorf("failed to resolve backend implementation")
+	}
 
 	result = ApplyResult{
-		ClusterName: cluster.Metadata.Name,
-		Backend:     desired.Backend,
-		DryRun:      opts.DryRun,
+		ClusterName:      cluster.Metadata.Name,
+		Backend:          desired.Backend,
+		DryRun:           opts.DryRun,
+		RuntimeRequested: opts.ExecuteRuntime,
 	}
 
 	if HasErrors(diags) {
@@ -167,6 +208,26 @@ func (a *App) Apply(ctx context.Context, specPath string, opts ApplyOptions) (re
 	if err := renderer.WriteArtifacts(opts.OutputDir, desired.Artifacts); err != nil {
 		return result, diags, fmt.Errorf("write artifacts: %w", err)
 	}
+
+	if opts.ExecuteRuntime {
+		executor, ok := backendImpl.(backend.RuntimeExecutor)
+		if !ok {
+			return result, diags, fmt.Errorf(
+				"backend %q does not support runtime execution; rerun without runtime execution",
+				desired.Backend,
+			)
+		}
+		runtimeResult, execErr := executor.ExecuteRuntime(ctx, backend.RuntimeApplyRequest{
+			ClusterName: cluster.Metadata.Name,
+			OutputDir:   opts.OutputDir,
+			Desired:     desired,
+		})
+		if execErr != nil {
+			return result, diags, execErr
+		}
+		result.RuntimeResult = &runtimeResult
+	}
+
 	if err := a.stateStore.Save(state.FromDesired(desired)); err != nil {
 		return result, diags, fmt.Errorf("save state snapshot: %w", err)
 	}
@@ -176,17 +237,23 @@ func (a *App) Apply(ctx context.Context, specPath string, opts ApplyOptions) (re
 	return result, diags, nil
 }
 
-func (a *App) Status(ctx context.Context, specPath string) (StatusResult, []domain.Diagnostic, error) {
+// Status reports desired-vs-snapshot convergence and optional backend runtime observations.
+func (a *App) Status(ctx context.Context, specPath string, opts StatusOptions) (StatusResult, []domain.Diagnostic, error) {
+	if opts.OutputDir == "" {
+		opts.OutputDir = ".bgorch/render"
+	}
+
 	cluster, diags, err := a.ValidateSpec(specPath)
 	if err != nil {
 		return StatusResult{}, nil, err
 	}
 
 	result := StatusResult{
-		ClusterName:  cluster.Metadata.Name,
-		Backend:      strings.TrimSpace(cluster.Spec.Runtime.Backend),
-		SnapshotPath: a.stateStore.SnapshotPath(cluster.Metadata.Name, strings.TrimSpace(cluster.Spec.Runtime.Backend)),
-		Observations: make([]string, 0),
+		ClusterName:             cluster.Metadata.Name,
+		Backend:                 strings.TrimSpace(cluster.Spec.Runtime.Backend),
+		SnapshotPath:            a.stateStore.SnapshotPath(cluster.Metadata.Name, strings.TrimSpace(cluster.Spec.Runtime.Backend)),
+		Observations:            make([]string, 0),
+		RuntimeObserveRequested: opts.ObserveRuntime,
 	}
 
 	if HasErrors(diags) {
@@ -224,10 +291,44 @@ func (a *App) Status(ctx context.Context, specPath string) (StatusResult, []doma
 		result.Observations = append(result.Observations, fmt.Sprintf("%d change(s) detected between desired state and local snapshot", changes))
 	}
 
+	if opts.ObserveRuntime {
+		_, backendImpl, resolveDiags := a.resolve(cluster)
+		if HasErrors(resolveDiags) {
+			result.RuntimeObservationError = "runtime observation skipped: backend resolution failed"
+			result.Observations = append(result.Observations, result.RuntimeObservationError)
+			return result, diags, nil
+		}
+		observer, ok := backendImpl.(backend.RuntimeObserver)
+		if !ok {
+			result.RuntimeObservationError = fmt.Sprintf("backend %q does not support runtime observation", desired.Backend)
+			result.Observations = append(result.Observations, result.RuntimeObservationError)
+			return result, diags, nil
+		}
+
+		runtimeObs, observeErr := observer.ObserveRuntime(ctx, backend.RuntimeObserveRequest{
+			ClusterName: cluster.Metadata.Name,
+			OutputDir:   opts.OutputDir,
+			Desired:     desired,
+		})
+		if observeErr != nil {
+			// Status remains usable in local-state mode even when runtime observation fails.
+			result.RuntimeObservationError = observeErr.Error()
+			result.Observations = append(result.Observations, "runtime observation failed: "+observeErr.Error())
+			return result, diags, nil
+		}
+		result.RuntimeObservation = &runtimeObs
+		result.Observations = append(result.Observations, "runtime observation: "+runtimeObs.Summary)
+	}
+
 	return result, diags, nil
 }
 
-func (a *App) Doctor(ctx context.Context, specPath string) (doctor.Report, error) {
+// Doctor runs operational checks and returns a structured report with pass/warn/fail statuses.
+func (a *App) Doctor(ctx context.Context, specPath string, opts DoctorOptions) (doctor.Report, error) {
+	if opts.OutputDir == "" {
+		opts.OutputDir = ".bgorch/render"
+	}
+
 	report := doctor.NewReport()
 
 	cluster, diags, err := a.ValidateSpec(specPath)
@@ -304,6 +405,41 @@ func (a *App) Doctor(ctx context.Context, specPath string) (doctor.Report, error
 		report.Add("plan.drift", doctor.StatusWarn, fmt.Sprintf("%d change(s) detected between desired and snapshot", changes), "run plan/apply to reconcile")
 	}
 
+	if opts.ObserveRuntime {
+		_, backendImpl, resolveDiags := a.resolve(cluster)
+		if HasErrors(resolveDiags) {
+			report.Add("runtime.observe", doctor.StatusWarn, "runtime observation skipped because backend resolution failed", "run validate and fix backend resolution issues")
+			return report, nil
+		}
+		observer, ok := backendImpl.(backend.RuntimeObserver)
+		if !ok {
+			report.Add(
+				"runtime.observe",
+				doctor.StatusWarn,
+				fmt.Sprintf("backend %q does not support runtime observation", desired.Backend),
+				"rerun without --observe-runtime or choose a backend with runtime observation support",
+			)
+			return report, nil
+		}
+
+		runtimeObs, observeErr := observer.ObserveRuntime(ctx, backend.RuntimeObserveRequest{
+			ClusterName: cluster.Metadata.Name,
+			OutputDir:   opts.OutputDir,
+			Desired:     desired,
+		})
+		if observeErr != nil {
+			// Doctor intentionally degrades to warning to preserve troubleshooting output.
+			report.Add(
+				"runtime.observe",
+				doctor.StatusWarn,
+				fmt.Sprintf("runtime observation failed: %v", observeErr),
+				"ensure runtime tools are installed and output-dir points to rendered artifacts",
+			)
+			return report, nil
+		}
+		report.Add("runtime.observe", doctor.StatusPass, runtimeObs.Summary, "")
+	}
+
 	return report, nil
 }
 
@@ -344,6 +480,7 @@ func (a *App) buildDesiredFromCluster(ctx context.Context, cluster *v1alpha1.Cha
 	return desired, nil
 }
 
+// HasErrors reports whether diagnostics contain at least one error-level entry.
 func HasErrors(diags []domain.Diagnostic) bool {
 	for _, d := range diags {
 		if d.Severity == domain.SeverityError {

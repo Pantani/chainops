@@ -9,24 +9,29 @@ import (
 	"github.com/Pantani/gorchestrator/internal/backend/compose"
 	"github.com/Pantani/gorchestrator/internal/backend/sshsystemd"
 	"github.com/Pantani/gorchestrator/internal/chain"
+	"github.com/Pantani/gorchestrator/internal/chain/cometbft"
 	"github.com/Pantani/gorchestrator/internal/chain/genericprocess"
 )
 
+// PluginRegistry stores chain plugins by unique name.
 type PluginRegistry struct {
 	mu      sync.RWMutex
 	plugins map[string]chain.Plugin
 }
 
+// BackendRegistry stores runtime backends by unique name.
 type BackendRegistry struct {
 	mu       sync.RWMutex
 	backends map[string]backend.Backend
 }
 
+// Registries groups plugin and backend registries used by the app layer.
 type Registries struct {
 	Plugins  *PluginRegistry
 	Backends *BackendRegistry
 }
 
+// New creates empty registries.
 func New() *Registries {
 	return &Registries{
 		Plugins:  &PluginRegistry{plugins: make(map[string]chain.Plugin)},
@@ -34,9 +39,11 @@ func New() *Registries {
 	}
 }
 
+// NewDefault registers built-in plugins and backends supported by the CLI.
 func NewDefault() *Registries {
 	r := New()
 	r.MustRegisterPlugin(genericprocess.New())
+	r.MustRegisterPlugin(cometbft.New())
 	r.MustRegisterBackend(compose.New())
 	r.MustRegisterBackend(sshsystemd.New())
 	return r
@@ -65,6 +72,7 @@ func (r *BackendRegistry) Register(b backend.Backend) error {
 		return fmt.Errorf("backend %q already registered", b.Name())
 	}
 	r.backends[b.Name()] = b
+	// Register stable aliases so specs can use short backend names.
 	switch b.Name() {
 	case "docker-compose":
 		r.backends["compose"] = b

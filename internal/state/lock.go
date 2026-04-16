@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
+// ErrLockHeld is returned when an apply lock already exists for the same key.
 var ErrLockHeld = errors.New("state lock is already held")
 
+// LockHeldError enriches ErrLockHeld with the conflicting lock file path.
 type LockHeldError struct {
 	Path string
 }
@@ -31,10 +33,12 @@ type Lock struct {
 	releaseErr error
 }
 
+// Path returns the absolute lock file path.
 func (l *Lock) Path() string {
 	return l.path
 }
 
+// Release removes the lock file exactly once and is safe for repeated calls.
 func (l *Lock) Release() error {
 	l.once.Do(func() {
 		err := os.Remove(l.path)
@@ -45,6 +49,7 @@ func (l *Lock) Release() error {
 	return l.releaseErr
 }
 
+// AcquireLock creates an exclusive lock for the given cluster/backend pair.
 func (s *Store) AcquireLock(clusterName, backend string) (*Lock, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create state dir for lock: %w", err)
@@ -73,6 +78,7 @@ func (s *Store) AcquireLock(clusterName, backend string) (*Lock, error) {
 	return &Lock{path: path}, nil
 }
 
+// EnsureStateDirAccessible validates read/write/delete access in the state directory.
 func (s *Store) EnsureStateDirAccessible() error {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
@@ -92,6 +98,7 @@ func (s *Store) lockPath(clusterName, backend string) string {
 	return filepath.Join(s.Dir, file)
 }
 
+// SnapshotPath returns the canonical snapshot path for the given cluster/backend pair.
 func (s *Store) SnapshotPath(clusterName, backend string) string {
 	return s.path(clusterName, backend)
 }

@@ -2,7 +2,11 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,18 +18,51 @@ import (
 	"github.com/Pantani/gorchestrator/internal/spec"
 )
 
-type Backend struct{}
-
-var _ backend.Backend = (*Backend)(nil)
-
-func New() *Backend {
-	return &Backend{}
+// Runner abstracts command execution for runtime operations and tests.
+type Runner interface {
+	Run(ctx context.Context, dir, name string, args ...string) (string, error)
 }
 
+type osCommandRunner struct{}
+
+func (r osCommandRunner) Run(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s: %w", strings.Join(append([]string{name}, args...), " "), err)
+	}
+	return string(out), nil
+}
+
+// Backend implements compose artifact rendering plus optional runtime actions.
+type Backend struct {
+	runner Runner
+}
+
+var _ backend.Backend = (*Backend)(nil)
+var _ backend.RuntimeExecutor = (*Backend)(nil)
+var _ backend.RuntimeObserver = (*Backend)(nil)
+
+// New returns a compose backend using OS command execution for runtime calls.
+func New() *Backend {
+	return NewWithRunner(osCommandRunner{})
+}
+
+// NewWithRunner injects a custom command runner for tests or custom execution.
+func NewWithRunner(r Runner) *Backend {
+	if r == nil {
+		r = osCommandRunner{}
+	}
+	return &Backend{runner: r}
+}
+
+// Name returns the canonical backend registry name.
 func (b *Backend) Name() string {
 	return "docker-compose"
 }
 
+// ValidateTarget enforces compose-specific workload constraints.
 func (b *Backend) ValidateTarget(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	diags := make([]domain.Diagnostic, 0)
 	if c.Spec.Runtime.Backend != "docker-compose" && c.Spec.Runtime.Backend != "compose" {
@@ -50,6 +87,7 @@ func (b *Backend) ValidateTarget(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	return diags
 }
 
+// BuildDesired transforms plugin output into compose services/volumes/networks artifacts.
 func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pluginOut chain.Output) (domain.DesiredState, error) {
 	_ = ctx
 
@@ -146,6 +184,7 @@ func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pl
 
 			depends := make([]string, 0, len(w.DependsOn))
 			for _, d := range w.DependsOn {
+				// Accept cross-node refs ("node/workload") and in-node short refs ("workload").
 				if strings.Contains(d, "/") {
 					parts := strings.SplitN(d, "/", 2)
 					depends = append(depends, serviceName(c.Metadata.Name, parts[0], parts[1]))
@@ -180,6 +219,7 @@ func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pl
 		Metadata: map[string]string{
 			"compose.project": projectName,
 			"compose.network": networkName,
+			"compose.file":    outputFile,
 		},
 	}
 
@@ -189,6 +229,72 @@ func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pl
 	sort.Slice(desired.Artifacts, func(i, j int) bool { return desired.Artifacts[i].Path < desired.Artifacts[j].Path })
 
 	return desired, nil
+}
+
+// ExecuteRuntime applies rendered compose artifacts to the local runtime.
+func (b *Backend) ExecuteRuntime(ctx context.Context, req backend.RuntimeApplyRequest) (backend.RuntimeApplyResult, error) {
+	composeFileRel := composeFilePath(req.Desired)
+	composeFileAbs := filepath.Join(req.OutputDir, composeFileRel)
+	if _, err := os.Stat(composeFileAbs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return backend.RuntimeApplyResult{}, fmt.Errorf(
+				"compose file not found at %s; run render/apply first or pass the correct --output-dir",
+				composeFileAbs,
+			)
+		}
+		return backend.RuntimeApplyResult{}, fmt.Errorf("check compose file at %s: %w", composeFileAbs, err)
+	}
+
+	project := composeProject(req.Desired, req.ClusterName)
+	args := []string{"compose", "-p", project, "-f", composeFileAbs, "up", "-d"}
+	out, err := b.runner.Run(ctx, req.OutputDir, "docker", args...)
+	if err != nil {
+		return backend.RuntimeApplyResult{}, fmt.Errorf(
+			"docker compose runtime apply failed: %w; install Docker/Compose and ensure daemon is running",
+			err,
+		)
+	}
+
+	return backend.RuntimeApplyResult{
+		Command: strings.Join(append([]string{"docker"}, args...), " "),
+		Output:  truncateOutput(out),
+	}, nil
+}
+
+// ObserveRuntime inspects compose runtime status from rendered artifacts.
+func (b *Backend) ObserveRuntime(ctx context.Context, req backend.RuntimeObserveRequest) (backend.RuntimeObserveResult, error) {
+	composeFileRel := composeFilePath(req.Desired)
+	composeFileAbs := filepath.Join(req.OutputDir, composeFileRel)
+	if _, err := os.Stat(composeFileAbs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return backend.RuntimeObserveResult{}, fmt.Errorf(
+				"compose file not found at %s; run render/apply first or pass the correct --output-dir",
+				composeFileAbs,
+			)
+		}
+		return backend.RuntimeObserveResult{}, fmt.Errorf("check compose file at %s: %w", composeFileAbs, err)
+	}
+
+	project := composeProject(req.Desired, req.ClusterName)
+	args := []string{"compose", "-p", project, "-f", composeFileAbs, "ps", "--all"}
+	out, err := b.runner.Run(ctx, req.OutputDir, "docker", args...)
+	if err != nil {
+		return backend.RuntimeObserveResult{}, fmt.Errorf(
+			"docker compose runtime observe failed: %w; install Docker/Compose and ensure daemon is running",
+			err,
+		)
+	}
+
+	details := compactLines(out)
+	summary := "docker compose reported no services"
+	if len(details) > 0 {
+		summary = fmt.Sprintf("docker compose returned %d line(s) from ps", len(details))
+	}
+
+	return backend.RuntimeObserveResult{
+		Summary: summary,
+		Details: details,
+	}, nil
 }
 
 func namedVolume(clusterName, nodeName string, v v1alpha1.VolumeSpec) string {
@@ -408,4 +514,52 @@ func formatVolume(v domain.VolumeMount) string {
 
 func quote(v string) string {
 	return strconv.Quote(v)
+}
+
+func composeFilePath(desired domain.DesiredState) string {
+	if desired.Metadata != nil {
+		if file := strings.TrimSpace(desired.Metadata["compose.file"]); file != "" {
+			return file
+		}
+	}
+	for _, a := range desired.Artifacts {
+		if strings.EqualFold(filepath.Base(a.Path), "compose.yaml") || strings.EqualFold(filepath.Base(a.Path), "docker-compose.yaml") {
+			return a.Path
+		}
+	}
+	return "compose.yaml"
+}
+
+func composeProject(desired domain.DesiredState, fallback string) string {
+	if desired.Metadata != nil {
+		if project := strings.TrimSpace(desired.Metadata["compose.project"]); project != "" {
+			return project
+		}
+	}
+	if strings.TrimSpace(fallback) != "" {
+		return sanitizeName(fallback)
+	}
+	return "chainops"
+}
+
+func truncateOutput(out string) string {
+	const maxLen = 4096
+	out = strings.TrimSpace(out)
+	if len(out) <= maxLen {
+		return out
+	}
+	return out[:maxLen] + "...(truncated)"
+}
+
+func compactLines(out string) []string {
+	lines := strings.Split(out, "\n")
+	compact := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		compact = append(compact, line)
+	}
+	return compact
 }

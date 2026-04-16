@@ -2,10 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Pantani/gorchestrator/internal/backend/compose"
+	"github.com/Pantani/gorchestrator/internal/chain/genericprocess"
+	"github.com/Pantani/gorchestrator/internal/registry"
 	"github.com/Pantani/gorchestrator/internal/state"
 )
 
@@ -99,7 +104,7 @@ func TestStatusAndDoctorBasic(t *testing.T) {
 
 	application := New(Options{StateDir: stateDir})
 
-	statusBefore, diags, err := application.Status(context.Background(), specPath)
+	statusBefore, diags, err := application.Status(context.Background(), specPath, StatusOptions{})
 	if err != nil {
 		t.Fatalf("status before apply failed: %v", err)
 	}
@@ -113,7 +118,7 @@ func TestStatusAndDoctorBasic(t *testing.T) {
 		t.Fatalf("expected pending changes before apply")
 	}
 
-	reportBefore, err := application.Doctor(context.Background(), specPath)
+	reportBefore, err := application.Doctor(context.Background(), specPath, DoctorOptions{})
 	if err != nil {
 		t.Fatalf("doctor before apply failed: %v", err)
 	}
@@ -130,7 +135,7 @@ func TestStatusAndDoctorBasic(t *testing.T) {
 		t.Fatalf("unexpected diagnostics with errors in apply: %#v", diags)
 	}
 
-	statusAfter, diags, err := application.Status(context.Background(), specPath)
+	statusAfter, diags, err := application.Status(context.Background(), specPath, StatusOptions{})
 	if err != nil {
 		t.Fatalf("status after apply failed: %v", err)
 	}
@@ -144,13 +149,168 @@ func TestStatusAndDoctorBasic(t *testing.T) {
 		t.Fatalf("expected converged status after apply")
 	}
 
-	reportAfter, err := application.Doctor(context.Background(), specPath)
+	reportAfter, err := application.Doctor(context.Background(), specPath, DoctorOptions{})
 	if err != nil {
 		t.Fatalf("doctor after apply failed: %v", err)
 	}
 	if reportAfter.HasFailures() {
 		t.Fatalf("doctor should not fail after apply")
 	}
+}
+
+func TestApplyRuntimeExecutionWithComposeRunner(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	stateDir := filepath.Join(baseDir, "state")
+	outDir := filepath.Join(baseDir, "out")
+	specPath := writeSpecFile(t, baseDir, "runtime-cluster")
+
+	runner := &fakeComposeRunner{output: "containers started"}
+	reg := registry.New()
+	reg.MustRegisterPlugin(genericprocess.New())
+	reg.MustRegisterBackend(compose.NewWithRunner(runner))
+
+	application := New(Options{StateDir: stateDir, Registries: reg})
+	result, diags, err := application.Apply(context.Background(), specPath, ApplyOptions{
+		OutputDir:      outDir,
+		ExecuteRuntime: true,
+	})
+	if err != nil {
+		t.Fatalf("apply with runtime execution failed: %v", err)
+	}
+	if HasErrors(diags) {
+		t.Fatalf("unexpected diagnostics with errors: %#v", diags)
+	}
+	if result.RuntimeResult == nil {
+		t.Fatalf("expected runtime result to be present")
+	}
+	if !strings.Contains(result.RuntimeResult.Command, "docker compose") {
+		t.Fatalf("expected docker compose command, got %q", result.RuntimeResult.Command)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected one runtime command, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "docker" {
+		t.Fatalf("expected docker command, got %q", call.name)
+	}
+	if !containsArg(call.args, "up") || !containsArg(call.args, "-d") {
+		t.Fatalf("expected compose up -d args, got %#v", call.args)
+	}
+	if !result.SnapshotUpdated {
+		t.Fatalf("snapshot should be updated when runtime execution succeeds")
+	}
+}
+
+func TestApplyRuntimeExecutionFailureDoesNotPersistSnapshot(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	stateDir := filepath.Join(baseDir, "state")
+	outDir := filepath.Join(baseDir, "out")
+	specPath := writeSpecFile(t, baseDir, "runtime-fail-cluster")
+
+	runner := &fakeComposeRunner{err: errors.New("docker: executable file not found")}
+	reg := registry.New()
+	reg.MustRegisterPlugin(genericprocess.New())
+	reg.MustRegisterBackend(compose.NewWithRunner(runner))
+
+	application := New(Options{StateDir: stateDir, Registries: reg})
+	_, _, err := application.Apply(context.Background(), specPath, ApplyOptions{
+		OutputDir:      outDir,
+		ExecuteRuntime: true,
+	})
+	if err == nil {
+		t.Fatalf("expected runtime execution error")
+	}
+	if !strings.Contains(err.Error(), "docker compose runtime apply failed") {
+		t.Fatalf("expected actionable runtime error, got %v", err)
+	}
+
+	store := state.NewStore(stateDir)
+	snap, loadErr := store.Load("runtime-fail-cluster", "docker-compose")
+	if loadErr != nil {
+		t.Fatalf("load snapshot: %v", loadErr)
+	}
+	if snap != nil {
+		t.Fatalf("snapshot must not be persisted on runtime failure")
+	}
+}
+
+func TestStatusAndDoctorObserveRuntimeFallback(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	stateDir := filepath.Join(baseDir, "state")
+	outDir := filepath.Join(baseDir, "out")
+	specPath := writeSpecFile(t, baseDir, "runtime-observe-cluster")
+
+	runner := &fakeComposeRunner{err: errors.New("docker daemon is not reachable")}
+	reg := registry.New()
+	reg.MustRegisterPlugin(genericprocess.New())
+	reg.MustRegisterBackend(compose.NewWithRunner(runner))
+
+	application := New(Options{StateDir: stateDir, Registries: reg})
+	if _, diags, err := application.Apply(context.Background(), specPath, ApplyOptions{OutputDir: outDir}); err != nil {
+		t.Fatalf("apply failed: %v", err)
+	} else if HasErrors(diags) {
+		t.Fatalf("unexpected diagnostics in apply: %#v", diags)
+	}
+
+	status, diags, err := application.Status(context.Background(), specPath, StatusOptions{
+		OutputDir:      outDir,
+		ObserveRuntime: true,
+	})
+	if err != nil {
+		t.Fatalf("status observe runtime should not fail: %v", err)
+	}
+	if HasErrors(diags) {
+		t.Fatalf("unexpected diagnostics in status: %#v", diags)
+	}
+	if status.RuntimeObservationError == "" {
+		t.Fatalf("expected runtime observation error message")
+	}
+
+	report, err := application.Doctor(context.Background(), specPath, DoctorOptions{
+		OutputDir:      outDir,
+		ObserveRuntime: true,
+	})
+	if err != nil {
+		t.Fatalf("doctor observe runtime should not fail: %v", err)
+	}
+	if report.HasFailures() {
+		t.Fatalf("doctor should not fail due to runtime observation fallback")
+	}
+	if !report.HasWarnings() {
+		t.Fatalf("doctor should emit warning when runtime observation fails")
+	}
+}
+
+type fakeComposeRunner struct {
+	output string
+	err    error
+	calls  []runnerCall
+}
+
+type runnerCall struct {
+	dir  string
+	name string
+	args []string
+}
+
+func (r *fakeComposeRunner) Run(_ context.Context, dir, name string, args ...string) (string, error) {
+	r.calls = append(r.calls, runnerCall{dir: dir, name: name, args: append([]string{}, args...)})
+	return r.output, r.err
+}
+
+func containsArg(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSpecFile(t *testing.T, dir, clusterName string) string {

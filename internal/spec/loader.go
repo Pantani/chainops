@@ -10,12 +10,14 @@ import (
 	"github.com/Pantani/gorchestrator/internal/api/v1alpha1"
 )
 
+// ResolvedNode is a concrete node instance expanded from a nodePool template.
 type ResolvedNode struct {
 	Name     string
 	PoolName string
 	Spec     v1alpha1.NodeSpec
 }
 
+// LoadFromFile reads YAML and applies defaulting before returning the cluster spec.
 func LoadFromFile(path string) (*v1alpha1.ChainCluster, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -31,6 +33,7 @@ func LoadFromFile(path string) (*v1alpha1.ChainCluster, error) {
 	return &c, nil
 }
 
+// ApplyDefaults mutates a cluster spec with implementation defaults expected by the pipeline.
 func ApplyDefaults(c *v1alpha1.ChainCluster) {
 	if c.APIVersion == "" {
 		c.APIVersion = v1alpha1.APIVersion
@@ -87,6 +90,7 @@ func ApplyDefaults(c *v1alpha1.ChainCluster) {
 	}
 }
 
+// ExpandNodes expands replicated nodePools into concrete node entries with stable names.
 func ExpandNodes(c *v1alpha1.ChainCluster) []ResolvedNode {
 	var out []ResolvedNode
 	for _, pool := range c.Spec.NodePools {

@@ -1,0 +1,73 @@
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: cometbft-single
+spec:
+  family: cometbft
+  plugin: cometbft-family
+  profile: validator-single
+  runtime:
+    backend: docker-compose
+    backendConfig:
+      compose:
+        projectName: cometbft-single
+        outputFile: compose.yaml
+  pluginConfig:
+    cometBFT:
+      chainID: cometbft-single-localnet
+      logLevel: info
+      pruning: default
+      minimumGasPrices: "0stake"
+  nodePools:
+    - name: validator
+      replicas: 1
+      roles: [validator]
+      template:
+        role: validator
+        volumes:
+          - name: datadir
+            type: named
+          - name: configdir
+            type: named
+        files:
+          - path: config/genesis.json
+            content: |
+              {
+                "genesis_time": "2026-01-01T00:00:00Z",
+                "chain_id": "cometbft-single-localnet",
+                "initial_height": "1",
+                "consensus_params": {
+                  "block": {"max_bytes": "22020096", "max_gas": "-1"},
+                  "evidence": {
+                    "max_age_num_blocks": "100000",
+                    "max_age_duration": "172800000000000",
+                    "max_bytes": "1048576"
+                  },
+                  "validator": {"pub_key_types": ["ed25519"]},
+                  "version": {"app": "0"}
+                },
+                "validators": [],
+                "app_hash": ""
+              }
+        workloads:
+          - name: cometbft
+            mode: container
+            image: ghcr.io/cometbft/cometbft:v0.38.17
+            command: ["cometbft"]
+            args: ["start", "--home", "/cometbft"]
+            ports:
+              - name: p2p
+                containerPort: 26656
+                hostPort: 26656
+              - name: rpc
+                containerPort: 26657
+                hostPort: 26657
+              - name: metrics
+                containerPort: 26660
+                hostPort: 26660
+            volumeMounts:
+              - volume: datadir
+                path: /cometbft/data
+              - volume: configdir
+                path: /cometbft/config
+            restartPolicy: unless-stopped

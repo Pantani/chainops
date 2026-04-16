@@ -1,74 +1,66 @@
-# bgorch: Arquitetura e Maturidade (Fase 2/3)
+# BGorch Architecture and Maturity Snapshot
 
-Status deste documento: **estado atual do repositório em 2026-04-16**.
+Status date: **2026-04-16**.
 
-## Escopo arquitetural
+## Architectural Axes
 
-O projeto está estruturado em três eixos independentes:
+BGorch is split into three independent concerns:
 
-1. **Core declarativo** (Go):
-   - parse/load de spec versionada,
-   - validação semântica,
-   - normalização por plugin,
-   - render de desired state,
-   - planning por diff contra snapshot local.
-2. **Plugin de chain family**:
-   - validação e normalização específicas,
-   - produção de artefatos específicos sem contaminar o core.
-3. **Backend de runtime**:
-   - validação de target/runtime,
-   - tradução de desired state para artefatos executáveis do ambiente alvo.
+1. Core orchestration (`internal/app`, `internal/planner`, `internal/state`, `internal/renderer`)
+2. Chain-family plugins (`internal/chain/*`)
+3. Runtime backends (`internal/backend/*`)
 
-## Maturidade por capacidade
+This keeps chain semantics out of the backend layer and runtime details out of the core planner/state model.
 
-| Capacidade | Estado | Observação |
-|------------|--------|------------|
-| API `v1alpha1` | Implementado | Schema comum + `pluginConfig` tipado |
-| CLI `validate` | Implementado | Com saída texto/json |
-| CLI `render` | Implementado | Gera artefatos determinísticos |
-| CLI `plan` | Implementado | Diff contra snapshot local |
-| CLI `apply` | Implementado (MVP) | Escreve artefatos + snapshot local sob lock |
-| CLI `status` | Implementado (MVP) | Resume convergência por desired vs snapshot local |
-| CLI `doctor` | Implementado (MVP) | Checks de spec/resolução/state + drift local |
-| Plugin `generic-process` | Implementado | Base para chain desconhecida |
-| Plugin real de referência | Planejado | Fase 3 |
-| Backend `docker-compose` | Implementado | Render de compose + artefatos plugin |
-| Backend `ssh+systemd` | Implementado (MVP) | Workloads host + render de unit files/env/layout |
-| Backend `kubernetes` | Planejado | Pós-MVP |
-| Adapter Terraform/Ansible | Planejado | Pós-MVP inicial |
+## Maturity by Capability
 
-## Fluxo atual do core
+| Capability | Status | Notes |
+|---|---|---|
+| API `bgorch.io/v1alpha1` | Implemented | Go types + schema docs available. |
+| CLI `validate`/`render`/`plan` | Implemented | Deterministic artifact pipeline and diffing. |
+| CLI `apply` with lock/snapshot | Implemented | Local-state-first; lock per `(cluster, backend)`. |
+| CLI `status`/`doctor` | Implemented | Local snapshot + diagnostics/checks. |
+| Compose runtime execution (`--runtime-exec`) | Implemented | Backend-gated, explicit opt-in flag. |
+| Compose runtime observation (`--observe-runtime`) | Implemented | Available in `status` and `doctor`. |
+| Plugin `generic-process` | Implemented | Generic fallback plugin. |
+| Plugin `cometbft-family` | Implemented | Validation + generated config/app/genesis artifacts. |
+| Backend `docker-compose` | Implemented | Render + runtime exec/observe. |
+| Backend `ssh-systemd` | Implemented | Host-mode validation + systemd/env/layout render + optional runtime preflight/observation. |
+| `ssh-systemd` runtime exec/observe | Implemented (preflight-gated) | Uses `ssh` + `systemctl`, requires targets/artifacts and explicit runtime flags. |
+| Typed `pluginConfig.cometBFT` | Implemented | CometBFT plugin consumes typed config with scope precedence (cluster -> node -> workload). |
+| Backend `kubernetes` | Planned | Not yet implemented. |
+| Terraform/Ansible adapters | Planned | Not yet implemented. |
 
-1. CLI carrega spec (`apiVersion: bgorch.io/v1alpha1`).
-2. Core resolve `plugin` e `backend` via registries.
-3. Executa validação:
-   - validação de schema/domínio,
-   - validação de plugin,
-   - validação de backend target.
-4. Normaliza spec no plugin.
-5. Plugin produz `Output` (artefatos/metadata específicos).
-6. Backend transforma em `DesiredState` e artefatos de runtime.
-7. `render` persiste artefatos; opcionalmente salva snapshot.
-8. `plan` compara desired com snapshot local e gera mudanças (`create/update/delete/noop`).
+## Core Flow (Implemented)
 
-## Fronteiras (não negociáveis)
+1. CLI loads and defaults the spec.
+2. Core resolves plugin/backend from registries.
+3. Validation combines core + plugin + backend diagnostics.
+4. Plugin normalizes + builds plugin output.
+5. Backend builds desired state.
+6. Planner diffs desired vs snapshot hashes.
+7. Commands render, apply, inspect, and diagnose from the same desired model.
 
-- Core **não** carrega detalhes de flags/config específicas de chain.
-- Plugin **não** decide como runtime é materializado (Compose/systemd/K8s).
-- Backend **não** modela semântica de protocolo blockchain.
-- Terraform/Ansible (quando adicionados) ficam como adapters especializados, não como control plane principal.
+## Non-negotiable Boundaries
 
-## Lacunas conhecidas para Fase 3
+- Core does not encode chain-specific protocol logic.
+- Plugins do not own runtime process orchestration semantics.
+- Backends do not own chain-family business rules.
+- Planner/state remain backend-agnostic and deterministic.
 
-- `apply` ainda não executa mutações remotas de runtime; no MVP aplica artefatos/snapshot local.
-- Sem observação de runtime real (estado atual usa desired vs snapshot local).
-- `doctor` ainda não faz probes remotas por backend.
-- Sem rollback/repair operacional.
-- Backend host (`ssh+systemd`) ainda não cobre bootstrap remoto, cópia e `systemctl` remoto.
+## Known Gaps
 
-## Referências de decisão
+- lock/state are local only (single-machine safety);
+- no distributed reconciliation loop;
+- no distributed lock/state backend yet;
+- runtime operations are synchronous and command-driven (no controller loop);
+- several schema fields are modeled in API types but not yet consumed end-to-end by backends.
+
+## Decision References
 
 - `docs/adr/0001-core-architecture.md`
 - `docs/adr/0002-plugin-model.md`
 - `docs/adr/0003-backend-model.md`
 - `docs/adr/0004-mvp-locking-and-command-semantics.md`
+- `docs/adr/0005-optional-runtime-execution-compose.md`
+- `docs/adr/0006-typed-family-plugin-config.md`

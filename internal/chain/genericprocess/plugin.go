@@ -13,8 +13,10 @@ import (
 	"github.com/Pantani/gorchestrator/internal/spec"
 )
 
+// Plugin is the generic fallback plugin for process-oriented chain specs.
 type Plugin struct{}
 
+// New returns a generic-process plugin instance.
 func New() *Plugin {
 	return &Plugin{}
 }
@@ -37,6 +39,7 @@ func (p *Plugin) Capabilities() chain.Capabilities {
 	}
 }
 
+// Validate checks generic-process specific extension fields.
 func (p *Plugin) Validate(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	diags := make([]domain.Diagnostic, 0)
 	if c.Spec.Plugin != p.Name() {
@@ -55,6 +58,7 @@ func (p *Plugin) Validate(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	return diags
 }
 
+// Normalize applies generic defaults used by downstream build logic.
 func (p *Plugin) Normalize(c *v1alpha1.ChainCluster) error {
 	if c.Spec.Profile == "" {
 		c.Spec.Profile = "default"
@@ -65,6 +69,7 @@ func (p *Plugin) Normalize(c *v1alpha1.ChainCluster) error {
 	return nil
 }
 
+// Build emits deterministic file artifacts from node/global genericProcess config blocks.
 func (p *Plugin) Build(ctx context.Context, c *v1alpha1.ChainCluster) (chain.Output, error) {
 	_ = ctx
 

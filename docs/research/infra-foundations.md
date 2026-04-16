@@ -1,4 +1,4 @@
-# Infra Foundations Research for `bgorch`
+# Infra Foundations Research for BGorch
 
 ## Escopo
 
@@ -246,9 +246,9 @@ Módulo Go é unidade versionável; código organizado em pacotes com fronteiras
 
 ---
 
-## Design Implications for bgorch
+## Design Implications for BGorch
 
-| Tecnologia | Boa prática | Risco se usada errado | Decisão no bgorch |
+| Tecnologia | Boa prática | Risco se usada errado | Decisão no BGorch |
 |------------|-------------|-----------------------|---------------------|
 | Dockerfile/Build | Multi-stage, imagem mínima, sem secrets embutidos | Imagens grandes, inseguras, build não reprodutível | Tratar Dockerfile só como packaging; secrets via `SecretRef` em runtime |
 | Docker Compose | Services/volumes/networks/healthchecks declarativos | Virar pseudo-control-plane sem drift model | Backend Compose gera artefatos determinísticos a partir do core |
