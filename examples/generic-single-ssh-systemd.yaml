@@ -1,0 +1,57 @@
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: generic-ssh
+spec:
+  family: generic
+  plugin: generic-process
+  runtime:
+    backend: ssh-systemd
+    target: validators
+    backendConfig:
+      sshSystemd:
+        user: bgorch
+        port: 22
+  nodePools:
+    - name: validator
+      replicas: 1
+      roles: [validator]
+      template:
+        name: validator
+        workloads:
+          - name: daemon
+            mode: host
+            binary: /usr/local/bin/customd
+            args: ["start", "--home", "/var/lib/customd"]
+            restartPolicy: always
+            env:
+              - name: CHAIN_ID
+                value: test-chain
+              - name: LOG_LEVEL
+                value: info
+            ports:
+              - name: p2p
+                containerPort: 26656
+                hostPort: 26656
+                protocol: tcp
+              - name: rpc
+                containerPort: 26657
+                hostPort: 26657
+                protocol: tcp
+            volumeMounts:
+              - volume: data
+                path: /var/lib/customd
+            healthChecks:
+              - type: cmd
+                command: "customd status"
+                periodSec: 10
+                failureThreshold: 3
+        volumes:
+          - name: data
+            type: bind
+            source: /var/lib/customd
+        files:
+          - path: config/config.toml
+            content: |
+              moniker = "validator"
+              pruning = "default"

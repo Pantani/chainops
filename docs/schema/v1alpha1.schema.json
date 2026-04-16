@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bgorch.io/schema/v1alpha1/chaincluster.json",
+  "title": "ChainCluster v1alpha1",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "bgorch.io/v1alpha1"},
+    "kind": {"const": "ChainCluster"},
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "labels": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "required": ["family", "plugin", "runtime", "nodePools"],
+      "properties": {
+        "family": {"type": "string"},
+        "profile": {"type": "string"},
+        "plugin": {"type": "string"},
+        "runtime": {
+          "type": "object",
+          "required": ["backend"],
+          "properties": {
+            "backend": {"type": "string"},
+            "target": {"type": "string"},
+            "backendConfig": {
+              "type": "object",
+              "properties": {
+                "compose": {
+                  "type": "object",
+                  "properties": {
+                    "projectName": {"type": "string"},
+                    "networkName": {"type": "string"},
+                    "outputFile": {"type": "string"}
+                  },
+                  "additionalProperties": false
+                },
+                "sshSystemd": {
+                  "type": "object",
+                  "properties": {
+                    "user": {"type": "string"},
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "nodePools": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "template"],
+            "properties": {
+              "name": {"type": "string"},
+              "replicas": {"type": "integer", "minimum": 1},
+              "roles": {"type": "array", "items": {"type": "string"}},
+              "template": {
+                "type": "object",
+                "required": ["workloads"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "role": {"type": "string"},
+                  "workloads": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["name"],
+                      "properties": {
+                        "name": {"type": "string"},
+                        "mode": {"type": "string", "enum": ["container", "host"]},
+                        "image": {"type": "string"},
+                        "binary": {"type": "string"},
+                        "command": {"type": "array", "items": {"type": "string"}},
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "env": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                              "name": {"type": "string"},
+                              "value": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "ports": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["containerPort"],
+                            "properties": {
+                              "name": {"type": "string"},
+                              "containerPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                              "hostPort": {"type": "integer", "minimum": 0, "maximum": 65535},
+                              "protocol": {"type": "string", "enum": ["tcp", "udp"]}
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "volumeMounts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["volume", "path"],
+                            "properties": {
+                              "volume": {"type": "string"},
+                              "path": {"type": "string"},
+                              "readOnly": {"type": "boolean"}
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "healthChecks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["type"],
+                            "properties": {
+                              "type": {"type": "string", "enum": ["cmd", "http", "tcp"]},
+                              "command": {"type": "string"},
+                              "path": {"type": "string"},
+                              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                              "initialDelaySec": {"type": "integer", "minimum": 0},
+                              "periodSec": {"type": "integer", "minimum": 1},
+                              "failureThreshold": {"type": "integer", "minimum": 1}
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "restartPolicy": {"type": "string", "enum": ["always", "unless-stopped", "on-failure"]},
+                        "dependsOn": {"type": "array", "items": {"type": "string"}},
+                        "pluginConfig": {"$ref": "#/$defs/pluginConfig"}
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "volumes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name"],
+                      "properties": {
+                        "name": {"type": "string"},
+                        "type": {"type": "string", "enum": ["named", "bind"]},
+                        "source": {"type": "string"}
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "content"],
+                      "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "mode": {"type": "string"}
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "pluginConfig": {"$ref": "#/$defs/pluginConfig"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "pluginConfig": {"$ref": "#/$defs/pluginConfig"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "pluginConfig": {
+      "type": "object",
+      "properties": {
+        "genericProcess": {
+          "type": "object",
+          "properties": {
+            "extraFiles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                  "path": {"type": "string"},
+                  "content": {"type": "string"},
+                  "mode": {"type": "string"}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

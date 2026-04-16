@@ -1,0 +1,104 @@
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: generic-multi
+spec:
+  family: generic
+  plugin: generic-process
+  profile: multiprocess
+  runtime:
+    backend: docker-compose
+    backendConfig:
+      compose:
+        projectName: generic-multi
+        outputFile: compose.yaml
+  nodePools:
+    - name: validator
+      replicas: 1
+      roles: [validator]
+      template:
+        volumes:
+          - name: execution-data
+            type: named
+          - name: consensus-data
+            type: named
+          - name: keys
+            type: bind
+            source: /opt/bgorch/keys
+        files:
+          - path: config/consensus.yaml
+            content: |
+              moniker: validator-0
+              fast_sync: true
+          - path: config/execution.yaml
+            content: |
+              ws: true
+              rpc_addr: 0.0.0.0
+        workloads:
+          - name: execution
+            mode: container
+            image: ghcr.io/example/executiond:v0.9.3
+            command: ["executiond"]
+            args: ["--config", "/etc/chain/execution.yaml"]
+            ports:
+              - name: execution-rpc
+                containerPort: 8545
+                hostPort: 18545
+            volumeMounts:
+              - volume: execution-data
+                path: /var/lib/execution
+            healthChecks:
+              - type: tcp
+                port: 8545
+                periodSec: 10
+            restartPolicy: unless-stopped
+          - name: consensus
+            mode: container
+            image: ghcr.io/example/consensusd:v0.9.3
+            command: ["consensusd"]
+            args: ["start", "--config", "/etc/chain/consensus.yaml"]
+            ports:
+              - name: p2p
+                containerPort: 26656
+                hostPort: 26656
+              - name: rpc
+                containerPort: 26657
+                hostPort: 26657
+            volumeMounts:
+              - volume: consensus-data
+                path: /var/lib/consensus
+            dependsOn: [execution]
+            healthChecks:
+              - type: cmd
+                command: "consensusd status >/dev/null 2>&1"
+                periodSec: 10
+            restartPolicy: unless-stopped
+          - name: validator
+            mode: container
+            image: ghcr.io/example/validatord:v0.9.3
+            command: ["validatord"]
+            args: ["run", "--keys-dir", "/etc/chain/keys"]
+            env:
+              - name: SIGNER_MODE
+                value: remote
+            volumeMounts:
+              - volume: keys
+                path: /etc/chain/keys
+                readOnly: true
+            dependsOn: [consensus]
+            healthChecks:
+              - type: http
+                path: /healthz
+                port: 9000
+                periodSec: 15
+            restartPolicy: on-failure
+          - name: metrics
+            mode: container
+            image: prom/node-exporter:v1.8.2
+            command: ["/bin/node_exporter"]
+            ports:
+              - name: metrics
+                containerPort: 9100
+                hostPort: 19100
+            dependsOn: [consensus]
+            restartPolicy: unless-stopped

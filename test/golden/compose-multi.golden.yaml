@@ -1,0 +1,85 @@
+name: "generic-multi"
+services:
+  generic-multi-validator-consensus:
+    image: "ghcr.io/example/consensusd:v0.9.3"
+    command:
+      - "consensusd"
+      - "start"
+      - "--config"
+      - "/etc/chain/consensus.yaml"
+    ports:
+      - "26656:26656/tcp"
+      - "26657:26657/tcp"
+    volumes:
+      - "generic-multi-validator-consensus-data:/var/lib/consensus"
+    depends_on:
+      - generic-multi-validator-execution
+    restart: "unless-stopped"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "consensusd status >/dev/null 2>&1"
+      interval: "10s"
+      timeout: "5s"
+      retries: 3
+    networks:
+      - generic-multi-net
+  generic-multi-validator-execution:
+    image: "ghcr.io/example/executiond:v0.9.3"
+    command:
+      - "executiond"
+      - "--config"
+      - "/etc/chain/execution.yaml"
+    ports:
+      - "18545:8545/tcp"
+    volumes:
+      - "generic-multi-validator-execution-data:/var/lib/execution"
+    restart: "unless-stopped"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "nc -z localhost 8545 || exit 1"
+      interval: "10s"
+      timeout: "5s"
+      retries: 3
+    networks:
+      - generic-multi-net
+  generic-multi-validator-metrics:
+    image: "prom/node-exporter:v1.8.2"
+    command:
+      - "/bin/node_exporter"
+    ports:
+      - "19100:9100/tcp"
+    depends_on:
+      - generic-multi-validator-consensus
+    restart: "unless-stopped"
+    networks:
+      - generic-multi-net
+  generic-multi-validator-validator:
+    image: "ghcr.io/example/validatord:v0.9.3"
+    command:
+      - "validatord"
+      - "run"
+      - "--keys-dir"
+      - "/etc/chain/keys"
+    environment:
+      SIGNER_MODE: "remote"
+    volumes:
+      - "/opt/bgorch/keys:/etc/chain/keys:ro"
+    depends_on:
+      - generic-multi-validator-consensus
+    restart: "on-failure"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "curl -fsS http://localhost:9000/healthz || exit 1"
+      interval: "15s"
+      timeout: "5s"
+      retries: 3
+    networks:
+      - generic-multi-net
+volumes:
+  generic-multi-validator-consensus-data: {}
+  generic-multi-validator-execution-data: {}
+networks:
+  generic-multi-net: {}

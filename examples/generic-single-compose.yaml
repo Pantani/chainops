@@ -1,0 +1,66 @@
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: generic-single
+spec:
+  family: generic
+  plugin: generic-process
+  profile: single-node
+  runtime:
+    backend: docker-compose
+    backendConfig:
+      compose:
+        projectName: generic-single
+        networkName: generic-single-net
+        outputFile: compose.yaml
+  nodePools:
+    - name: rpc
+      replicas: 1
+      template:
+        role: rpc
+        volumes:
+          - name: datadir
+            type: named
+        files:
+          - path: config/node.toml
+            content: |
+              [node]
+              moniker = "generic-single"
+              log_level = "info"
+        workloads:
+          - name: node
+            mode: container
+            image: ghcr.io/example/chaind:v0.1.0
+            command: ["chaind"]
+            args: ["start", "--home", "/var/lib/chain"]
+            env:
+              - name: CHAIN_HOME
+                value: /var/lib/chain
+              - name: CHAIN_LOG_FORMAT
+                value: json
+            ports:
+              - name: p2p
+                containerPort: 26656
+                hostPort: 26656
+                protocol: tcp
+              - name: rpc
+                containerPort: 26657
+                hostPort: 26657
+                protocol: tcp
+            volumeMounts:
+              - volume: datadir
+                path: /var/lib/chain
+            healthChecks:
+              - type: cmd
+                command: "chaind status >/dev/null 2>&1"
+                periodSec: 10
+                failureThreshold: 6
+            restartPolicy: unless-stopped
+  pluginConfig:
+    genericProcess:
+      extraFiles:
+        - path: scripts/entrypoint.sh
+          content: |
+            #!/usr/bin/env sh
+            set -eu
+            exec chaind start --home /var/lib/chain

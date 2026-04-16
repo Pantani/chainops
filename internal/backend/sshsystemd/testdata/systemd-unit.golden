@@ -1,0 +1,16 @@
+[Unit]
+Description=bgorch generic-ssh/validator/daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/bgorch/generic-ssh/validator/daemon
+EnvironmentFile=-/etc/bgorch/generic-ssh/validator/generic-ssh-validator-daemon.env
+ExecStart=/usr/local/bin/customd start --home /var/lib/customd
+Restart=always
+RestartSec=5s
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

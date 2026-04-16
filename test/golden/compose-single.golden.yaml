@@ -1,0 +1,31 @@
+name: "generic-single"
+services:
+  generic-single-rpc-node:
+    image: "ghcr.io/example/chaind:v0.1.0"
+    command:
+      - "chaind"
+      - "start"
+      - "--home"
+      - "/var/lib/chain"
+    environment:
+      CHAIN_HOME: "/var/lib/chain"
+      CHAIN_LOG_FORMAT: "json"
+    ports:
+      - "26656:26656/tcp"
+      - "26657:26657/tcp"
+    volumes:
+      - "generic-single-rpc-datadir:/var/lib/chain"
+    restart: "unless-stopped"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "chaind status >/dev/null 2>&1"
+      interval: "10s"
+      timeout: "5s"
+      retries: 6
+    networks:
+      - generic-single-net
+volumes:
+  generic-single-rpc-datadir: {}
+networks:
+  generic-single-net: {}
