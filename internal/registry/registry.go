@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/Pantani/gorchestrator/internal/backend"
@@ -64,12 +65,20 @@ func NewDefault() *Registries {
 }
 
 func (r *PluginRegistry) Register(p chain.Plugin) error {
+	if p == nil {
+		return fmt.Errorf("plugin cannot be nil")
+	}
+	name := strings.TrimSpace(p.Name())
+	if name == "" {
+		return fmt.Errorf("plugin name cannot be empty")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.plugins[p.Name()]; exists {
-		return fmt.Errorf("plugin %q already registered", p.Name())
+	if _, exists := r.plugins[name]; exists {
+		return fmt.Errorf("plugin %q already registered", name)
 	}
-	r.plugins[p.Name()] = p
+	r.plugins[name] = p
 	return nil
 }
 
@@ -80,22 +89,36 @@ func (r *PluginRegistry) MustRegister(p chain.Plugin) {
 }
 
 func (r *BackendRegistry) Register(b backend.Backend) error {
+	if b == nil {
+		return fmt.Errorf("backend cannot be nil")
+	}
+	name := strings.TrimSpace(b.Name())
+	if name == "" {
+		return fmt.Errorf("backend name cannot be empty")
+	}
+	aliases := backendAliases(name)
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.backends[b.Name()]; exists {
-		return fmt.Errorf("backend %q already registered", b.Name())
+	if _, exists := r.backends[name]; exists {
+		return fmt.Errorf("backend %q already registered", name)
 	}
-	r.backends[b.Name()] = b
-	// Register stable aliases so specs can use short backend names.
-	switch b.Name() {
-	case "docker-compose":
-		r.backends["compose"] = b
-	case "ssh-systemd":
-		r.backends["sshsystemd"] = b
-	case "kubernetes":
-		r.backends["k8s"] = b
-	case "terraform":
-		r.backends["tf"] = b
+
+	for _, alias := range aliases {
+		if alias == name {
+			continue
+		}
+		if existing, exists := r.backends[alias]; exists && existing != b {
+			return fmt.Errorf("backend alias %q already registered", alias)
+		}
+	}
+
+	r.backends[name] = b
+	for _, alias := range aliases {
+		if alias == name {
+			continue
+		}
+		r.backends[alias] = b
 	}
 	return nil
 }
@@ -109,14 +132,14 @@ func (r *BackendRegistry) MustRegister(b backend.Backend) {
 func (r *PluginRegistry) Get(name string) (chain.Plugin, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.plugins[name]
+	p, ok := r.plugins[strings.TrimSpace(name)]
 	return p, ok
 }
 
 func (r *BackendRegistry) Get(name string) (backend.Backend, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	b, ok := r.backends[name]
+	b, ok := r.backends[strings.TrimSpace(name)]
 	return b, ok
 }
 
@@ -148,4 +171,19 @@ func (r *Registries) MustRegisterPlugin(p chain.Plugin) {
 
 func (r *Registries) MustRegisterBackend(b backend.Backend) {
 	r.Backends.MustRegister(b)
+}
+
+func backendAliases(name string) []string {
+	switch name {
+	case "docker-compose":
+		return []string{"compose"}
+	case "ssh-systemd":
+		return []string{"sshsystemd"}
+	case "kubernetes":
+		return []string{"k8s"}
+	case "terraform":
+		return []string{"tf"}
+	default:
+		return nil
+	}
 }

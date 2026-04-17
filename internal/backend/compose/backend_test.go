@@ -22,6 +22,57 @@ func TestComposeRenderGoldenMultiProcess(t *testing.T) {
 	runComposeGoldenTest(t, "generic-multiprocess-compose.yaml", "compose-multi.golden.yaml")
 }
 
+func TestComposeValidateTargetRejectsInvalidOutputFile(t *testing.T) {
+	t.Parallel()
+
+	cluster, err := spec.LoadFromFile(filepath.Join("..", "..", "..", "examples", "generic-single-compose.yaml"))
+	if err != nil {
+		t.Fatalf("load spec: %v", err)
+	}
+	cluster.Spec.Runtime.BackendConfig.Compose.OutputFile = "../escape.yaml"
+
+	backendImpl := New()
+	diags := backendImpl.ValidateTarget(cluster)
+	found := false
+	for _, d := range diags {
+		if d.Severity == domain.SeverityError && d.Path == "spec.runtime.backendConfig.compose.outputFile" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected outputFile validation error, got: %#v", diags)
+	}
+}
+
+func TestComposeBuildDesiredRejectsInvalidOutputFile(t *testing.T) {
+	t.Parallel()
+
+	cluster, err := spec.LoadFromFile(filepath.Join("..", "..", "..", "examples", "generic-single-compose.yaml"))
+	if err != nil {
+		t.Fatalf("load spec: %v", err)
+	}
+	cluster.Spec.Runtime.BackendConfig.Compose.OutputFile = "/tmp/compose.yaml"
+
+	plugin := genericprocess.New()
+	if err := plugin.Normalize(cluster); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	pluginOut, err := plugin.Build(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("plugin build: %v", err)
+	}
+
+	backendImpl := New()
+	_, err = backendImpl.BuildDesired(context.Background(), cluster, pluginOut)
+	if err == nil {
+		t.Fatalf("expected invalid compose output file error")
+	}
+	if !strings.Contains(err.Error(), "invalid compose output file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func runComposeGoldenTest(t *testing.T, exampleFile, goldenFile string) {
 	t.Helper()
 
@@ -130,6 +181,17 @@ func TestComposeObserveRuntimeFallback(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "docker compose runtime observe failed") {
 		t.Fatalf("expected actionable runtime observe error, got %v", err)
+	}
+}
+
+func TestComposeFilePathFallsBackOnInvalidMetadata(t *testing.T) {
+	t.Parallel()
+
+	desired := domain.DesiredState{
+		Metadata: map[string]string{"compose.file": "../escape.yaml"},
+	}
+	if got := composeFilePath(desired); got != "compose.yaml" {
+		t.Fatalf("expected safe fallback compose path, got %q", got)
 	}
 }
 

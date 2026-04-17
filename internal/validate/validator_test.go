@@ -262,6 +262,107 @@ spec:
 	}
 }
 
+func TestClusterValidationRejectsDuplicateExpandedNodeNames(t *testing.T) {
+	specYAML := `
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: test-chain
+spec:
+  family: generic
+  plugin: generic-process
+  runtime:
+    backend: docker-compose
+  nodePools:
+    - name: validators-a
+      replicas: 1
+      template:
+        name: validator
+        workloads:
+          - name: node
+            mode: container
+            image: ghcr.io/example/node:v1
+    - name: validators-b
+      replicas: 1
+      template:
+        name: validator
+        workloads:
+          - name: node
+            mode: container
+            image: ghcr.io/example/node:v1
+`
+	c := mustParse(t, specYAML)
+	diags := Cluster(c)
+	if !containsDiagnostic(diags, "error", "spec.nodePools[1].template.name") {
+		t.Fatalf("expected duplicate expanded node name error, got %v", diags)
+	}
+}
+
+func TestClusterValidationRejectsInvalidAndDuplicateEnvNames(t *testing.T) {
+	specYAML := `
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: test-chain
+spec:
+  family: generic
+  plugin: generic-process
+  runtime:
+    backend: docker-compose
+  nodePools:
+    - name: rpc
+      replicas: 1
+      template:
+        workloads:
+          - name: node
+            mode: container
+            image: ghcr.io/example/node:v1
+            env:
+              - name: VALID_NAME
+                value: one
+              - name: "BAD NAME"
+                value: bad
+              - name: VALID_NAME
+                value: two
+`
+	c := mustParse(t, specYAML)
+	diags := Cluster(c)
+	if !containsDiagnostic(diags, "error", "spec.nodePools[0].template.workloads[0].env[1].name") {
+		t.Fatalf("expected invalid env name error, got %v", diags)
+	}
+	if !containsDiagnostic(diags, "error", "spec.nodePools[0].template.workloads[0].env[2].name") {
+		t.Fatalf("expected duplicate env name error, got %v", diags)
+	}
+}
+
+func TestClusterValidationRejectsInvalidRestartPolicy(t *testing.T) {
+	specYAML := `
+apiVersion: bgorch.io/v1alpha1
+kind: ChainCluster
+metadata:
+  name: test-chain
+spec:
+  family: generic
+  plugin: generic-process
+  runtime:
+    backend: docker-compose
+  nodePools:
+    - name: rpc
+      replicas: 1
+      template:
+        workloads:
+          - name: node
+            mode: container
+            image: ghcr.io/example/node:v1
+            restartPolicy: unsupported
+`
+	c := mustParse(t, specYAML)
+	diags := Cluster(c)
+	if !containsDiagnostic(diags, "error", "spec.nodePools[0].template.workloads[0].restartPolicy") {
+		t.Fatalf("expected invalid restartPolicy error, got %v", diags)
+	}
+}
+
 func mustParse(t *testing.T, raw string) *v1alpha1.ChainCluster {
 	t.Helper()
 	var c v1alpha1.ChainCluster

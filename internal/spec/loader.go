@@ -76,6 +76,8 @@ func ApplyDefaults(c *v1alpha1.ChainCluster) {
 			}
 			if w.RestartPolicy == "" {
 				w.RestartPolicy = v1alpha1.RestartUnlessStopped
+			} else {
+				w.RestartPolicy = v1alpha1.RestartPolicy(strings.ToLower(strings.TrimSpace(string(w.RestartPolicy))))
 			}
 			for k := range w.Ports {
 				if w.Ports[k].Protocol == "" {

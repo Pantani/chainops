@@ -3,6 +3,7 @@ package renderer
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -30,17 +31,22 @@ func WriteArtifacts(baseDir string, artifacts []domain.Artifact) error {
 	return nil
 }
 
-func safeRelPath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return "", fmt.Errorf("absolute paths are not allowed")
+func safeRelPath(rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", fmt.Errorf("empty path")
 	}
-	clean := filepath.Clean(path)
-	// Guard against path traversal outside the selected output directory.
+
+	normalized := strings.ReplaceAll(rawPath, "\\", "/")
+	clean := path.Clean(normalized)
 	if clean == "." || clean == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	if strings.HasPrefix(clean, "..") || strings.Contains(clean, "../") {
+	if strings.HasPrefix(clean, "/") || filepath.IsAbs(rawPath) {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("path escapes output dir")
 	}
-	return clean, nil
+	return filepath.FromSlash(clean), nil
 }

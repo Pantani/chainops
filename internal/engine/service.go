@@ -110,14 +110,29 @@ func (s *Service) RemoveArtifactsDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve artifacts directory %q: %w", clean, err)
 	}
-	if abs == "/" {
+	root := filepath.VolumeName(abs) + string(filepath.Separator)
+	if abs == root {
 		return fmt.Errorf("refusing to remove root directory")
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil && isSameOrParentPath(abs, cwd) {
+		return fmt.Errorf("refusing to remove %q because it contains the current working directory", abs)
 	}
 	err = os.RemoveAll(abs)
 	if err != nil {
 		return fmt.Errorf("remove artifacts directory %q: %w", abs, err)
 	}
 	return nil
+}
+
+func isSameOrParentPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // PluginNames returns sorted plugin names.

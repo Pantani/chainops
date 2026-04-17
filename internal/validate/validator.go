@@ -49,6 +49,7 @@ func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 	}
 
 	poolNames := map[string]struct{}{}
+	expandedNodeNames := map[string]string{}
 	for i, pool := range c.Spec.NodePools {
 		poolPath := fmt.Sprintf("spec.nodePools[%d]", i)
 		if pool.Name == "" {
@@ -64,6 +65,29 @@ func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 		}
 		if len(pool.Template.Workloads) == 0 {
 			diags = append(diags, domain.Error(poolPath+".template.workloads", "at least one workload is required", "define at least one process per logical node"))
+		}
+		namePrefix := strings.TrimSpace(pool.Template.Name)
+		namePath := poolPath + ".template.name"
+		if namePrefix == "" {
+			namePrefix = strings.TrimSpace(pool.Name)
+			namePath = poolPath + ".name"
+		}
+		if namePrefix != "" && pool.Replicas > 0 {
+			for replica := 0; replica < pool.Replicas; replica++ {
+				resolvedName := namePrefix
+				if pool.Replicas > 1 {
+					resolvedName = fmt.Sprintf("%s-%02d", namePrefix, replica)
+				}
+				if firstPath, exists := expandedNodeNames[resolvedName]; exists {
+					diags = append(diags, domain.Error(
+						namePath,
+						"duplicate expanded node name",
+						fmt.Sprintf("resolved node name %q already produced by %s", resolvedName, firstPath),
+					))
+					continue
+				}
+				expandedNodeNames[resolvedName] = namePath
+			}
 		}
 
 		volumeNames := map[string]struct{}{}
@@ -106,9 +130,33 @@ func Cluster(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 			default:
 				diags = append(diags, domain.Error(wPath+".mode", "unsupported workload mode", "use 'container' or 'host'"))
 			}
+			if rp := strings.TrimSpace(string(w.RestartPolicy)); rp != "" && !isSupportedRestartPolicy(w.RestartPolicy) {
+				diags = append(diags, domain.Error(
+					wPath+".restartPolicy",
+					"unsupported restart policy",
+					"use one of: always, unless-stopped, on-failure",
+				))
+			}
 
 			if w.Image != "" && w.Binary != "" {
 				diags = append(diags, domain.Warning(wPath, "workload has both image and binary", "binary will be ignored by container-focused backends"))
+			}
+			envNames := map[string]struct{}{}
+			for eIdx, env := range w.Env {
+				envPath := fmt.Sprintf("%s.env[%d]", wPath, eIdx)
+				name := strings.TrimSpace(env.Name)
+				if name == "" {
+					diags = append(diags, domain.Error(envPath+".name", "env name is required", "set a non-empty environment variable name"))
+					continue
+				}
+				if strings.Contains(name, "=") || strings.ContainsAny(name, " \t\r\n") {
+					diags = append(diags, domain.Error(envPath+".name", "invalid env name", "avoid whitespace and '=' in environment variable names"))
+				}
+				if _, exists := envNames[name]; exists {
+					diags = append(diags, domain.Error(envPath+".name", "duplicate env name", "environment variable names must be unique per workload"))
+					continue
+				}
+				envNames[name] = struct{}{}
 			}
 
 			for pIdx, p := range w.Ports {
@@ -553,4 +601,13 @@ func validateOptionalPort(path string, port int) []domain.Diagnostic {
 		}
 	}
 	return nil
+}
+
+func isSupportedRestartPolicy(policy v1alpha1.RestartPolicy) bool {
+	switch strings.ToLower(strings.TrimSpace(string(policy))) {
+	case string(v1alpha1.RestartAlways), string(v1alpha1.RestartUnlessStopped), string(v1alpha1.RestartOnFailure):
+		return true
+	default:
+		return false
+	}
 }

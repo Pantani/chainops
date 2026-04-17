@@ -76,3 +76,30 @@ func TestApplyDefaultsKeepsExplicitPlugin(t *testing.T) {
 		t.Fatalf("expected explicit plugin to be preserved, got %q", cluster.Spec.Plugin)
 	}
 }
+
+func TestApplyDefaultsNormalizesRestartPolicy(t *testing.T) {
+	cluster := &v1alpha1.ChainCluster{
+		Spec: v1alpha1.ChainClusterSpec{
+			Family: "generic",
+			Runtime: v1alpha1.RuntimeSpec{
+				Backend: "docker-compose",
+			},
+			NodePools: []v1alpha1.NodePoolSpec{
+				{
+					Name: "nodes",
+					Template: v1alpha1.NodeSpec{
+						Workloads: []v1alpha1.WorkloadSpec{
+							{Name: "node", Image: "alpine:3.20", RestartPolicy: "ALWAYS"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ApplyDefaults(cluster)
+	got := cluster.Spec.NodePools[0].Template.Workloads[0].RestartPolicy
+	if got != v1alpha1.RestartAlways {
+		t.Fatalf("expected restartPolicy %q, got %q", v1alpha1.RestartAlways, got)
+	}
+}

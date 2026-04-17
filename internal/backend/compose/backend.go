@@ -73,6 +73,15 @@ func (b *Backend) ValidateTarget(c *v1alpha1.ChainCluster) []domain.Diagnostic {
 		diags = append(diags, domain.Error("spec.nodePools", "compose backend requires nodePools", "define at least one nodePool"))
 		return diags
 	}
+	if cfg := c.Spec.Runtime.BackendConfig.Compose; cfg != nil {
+		if _, err := normalizeComposeOutputFile(cfg.OutputFile); err != nil {
+			diags = append(diags, domain.Error(
+				"spec.runtime.backendConfig.compose.outputFile",
+				"invalid compose output file path",
+				err.Error(),
+			))
+		}
+	}
 	for i, pool := range c.Spec.NodePools {
 		for j, w := range pool.Template.Workloads {
 			if w.Mode == v1alpha1.WorkloadModeHost {
@@ -103,9 +112,9 @@ func (b *Backend) BuildDesired(ctx context.Context, c *v1alpha1.ChainCluster, pl
 	if networkName == "" {
 		networkName = fmt.Sprintf("%s-net", sanitizeName(c.Metadata.Name))
 	}
-	outputFile := composeCfg.OutputFile
-	if strings.TrimSpace(outputFile) == "" {
-		outputFile = "compose.yaml"
+	outputFile, err := normalizeComposeOutputFile(composeCfg.OutputFile)
+	if err != nil {
+		return domain.DesiredState{}, fmt.Errorf("invalid compose output file: %w", err)
 	}
 
 	nodes := spec.ExpandNodes(c)
@@ -519,12 +528,16 @@ func quote(v string) string {
 func composeFilePath(desired domain.DesiredState) string {
 	if desired.Metadata != nil {
 		if file := strings.TrimSpace(desired.Metadata["compose.file"]); file != "" {
-			return file
+			if normalized, err := normalizeComposeOutputFile(file); err == nil {
+				return normalized
+			}
 		}
 	}
 	for _, a := range desired.Artifacts {
 		if strings.EqualFold(filepath.Base(a.Path), "compose.yaml") || strings.EqualFold(filepath.Base(a.Path), "docker-compose.yaml") {
-			return a.Path
+			if normalized, err := normalizeComposeOutputFile(a.Path); err == nil {
+				return normalized
+			}
 		}
 	}
 	return "compose.yaml"
@@ -562,4 +575,22 @@ func compactLines(out string) []string {
 		compact = append(compact, line)
 	}
 	return compact
+}
+
+func normalizeComposeOutputFile(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "compose.yaml", nil
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("outputFile must be relative to the output directory")
+	}
+	clean := filepath.ToSlash(filepath.Clean(trimmed))
+	if clean == "." || clean == "" {
+		return "", fmt.Errorf("outputFile must not be empty")
+	}
+	if strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("outputFile cannot escape the output directory")
+	}
+	return clean, nil
 }
